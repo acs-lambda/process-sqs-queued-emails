@@ -39,15 +39,37 @@ def get_associated_account(email: str):
 
 
 def get_email_chain(conversation_id: str):
+    """
+    Retrieves and formats the email chain for a conversation.
+    Returns a list of dictionaries with consistent 'subject' and 'body' keys.
+    """
     table = dynamodb_resource.Table('Conversations')
-    res = table.query(
-        KeyConditionExpression='conversation_id = :cid',
-        ExpressionAttributeValues={':cid': conversation_id}
-    )
-    print("Fetched email chain: ", res)
-    items = res.get('Items', [])
-    # sort and return, omitted here for brevity
-    return items
+    try:
+        res = table.query(
+            KeyConditionExpression='conversation_id = :cid',
+            ExpressionAttributeValues={':cid': conversation_id}
+        )
+        print("Fetched email chain: ", res)
+        items = res.get('Items', [])
+        
+        # Sort by timestamp
+        sorted_items = sorted(items, key=lambda x: x.get('timestamp', ''))
+        
+        # Format items to have consistent keys
+        formatted_chain = []
+        for item in sorted_items:
+            formatted_chain.append({
+                'subject': item.get('subject', ''),
+                'body': item.get('body', ''),
+                'sender': item.get('sender', ''),
+                'timestamp': item.get('timestamp', ''),
+                'type': item.get('type', '')
+            })
+        
+        return formatted_chain
+    except Exception as e:
+        print(f"Error fetching email chain: {str(e)}")
+        return []
 
 
 def get_account_email(account_id: str):
