@@ -21,6 +21,58 @@ logger.setLevel(logging.INFO)
 s3 = boto3.client('s3')
 sqs = boto3.client('sqs')
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
+lambda_client = boto3.client('lambda', region_name=AWS_REGION)
+
+def update_thread_with_attributes(conversation_id: str) -> None:
+    """
+    Invokes get-thread-attrs lambda and updates the thread with the returned attributes.
+    """
+    try:
+        # Invoke get-thread-attrs lambda
+        response = lambda_client.invoke(
+            FunctionName='get-thread-attrs',
+            InvocationType='RequestResponse',
+            Payload=json.dumps({
+                'body': json.dumps({
+                    'conversationId': conversation_id
+                })
+            })
+        )
+        
+        # Parse the response
+        response_payload = json.loads(response['Payload'].read())
+        if response_payload['statusCode'] != 200:
+            logger.error(f"Failed to get thread attributes: {response_payload}")
+            return
+            
+        attributes = json.loads(response_payload['body'])
+        
+        # Update the thread with the attributes
+        threads_table = dynamodb.Table('Threads')
+        update_expr = "SET "
+        expr_attr_values = {}
+        expr_attr_names = {}
+        
+        for i, (key, value) in enumerate(attributes.items()):
+            placeholder = f":val{i}"
+            name_placeholder = f"#attr{i}"
+            update_expr += f"{name_placeholder} = {placeholder}, "
+            expr_attr_values[placeholder] = value
+            expr_attr_names[name_placeholder] = key.lower().replace(' ', '_')
+        
+        # Remove trailing comma and space
+        update_expr = update_expr[:-2]
+        
+        threads_table.update_item(
+            Key={'conversation_id': conversation_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_attr_values,
+            ExpressionAttributeNames=expr_attr_names
+        )
+        
+        logger.info(f"Successfully updated thread attributes for conversation {conversation_id}")
+    except Exception as e:
+        logger.error(f"Error updating thread attributes: {str(e)}")
 
 def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
@@ -162,6 +214,9 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
             )
         else:
             logger.warning(f"Thread not found for non-first email conversation {data['conv_id']}")
+
+        # Update thread attributes after storing email data
+        update_thread_with_attributes(data['conv_id'])
 
         return True
     except Exception as e:
