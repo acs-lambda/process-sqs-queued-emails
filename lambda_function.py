@@ -81,39 +81,37 @@ def store_email_data(data: Dict[str, Any]) -> bool:
     Returns True if successful, False otherwise.
     """
     try:
-        # Start a transaction
-        with dynamodb.meta.client.start_transaction() as transaction:
-            # Store in Conversations table
-            conversations_table = dynamodb.Table('Conversations')
-            conversations_table.put_item(
+        # Store in Conversations table
+        conversations_table = dynamodb.Table('Conversations')
+        conversations_table.put_item(
+            Item={
+                'conversation_id': data['conv_id'],
+                'response_id': data['msg_id_hdr'],
+                'timestamp': data['timestamp'],
+                'sender': data['source'],
+                'receiver': data['destination'],
+                'associated_account': data['account_id'],
+                'subject': data['subject'],
+                'body': data['text_body'],
+                's3_location': data['s3_key'],
+                'type': 'inbound-email',
+                'is_first_email': '1' if data['is_first'] else '0',
+                'ev_score': '-1'  # Will be updated after EV calculation
+            }
+        )
+
+        if data['is_first']:
+            # Store in Threads table for new conversations
+            threads_table = dynamodb.Table('Threads')
+            threads_table.put_item(
                 Item={
                     'conversation_id': data['conv_id'],
-                    'response_id': data['msg_id_hdr'],
-                    'timestamp': data['timestamp'],
-                    'sender': data['source'],
-                    'receiver': data['destination'],
+                    'source': data['source'],
                     'associated_account': data['account_id'],
-                    'subject': data['subject'],
-                    'body': data['text_body'],
-                    's3_location': data['s3_key'],
-                    'type': 'inbound-email',
-                    'is_first_email': '1' if data['is_first'] else '0',
-                    'ev_score': '-1'  # Will be updated after EV calculation
+                    'read': False,
+                    'lcp_enabled': True
                 }
             )
-
-            if data['is_first']:
-                # Store in Threads table for new conversations
-                threads_table = dynamodb.Table('Threads')
-                threads_table.put_item(
-                    Item={
-                        'conversation_id': data['conv_id'],
-                        'source': data['source'],
-                        'associated_account': data['account_id'],
-                        'read': False,
-                        'lcp_enabled': True
-                    }
-                )
 
         return True
     except Exception as e:
