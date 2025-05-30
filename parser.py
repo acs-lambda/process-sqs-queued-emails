@@ -12,47 +12,27 @@ logger.setLevel(logging.INFO)
 def strip_quoted_reply(text: str) -> str:
     """
     Strips out quoted reply text from email body.
-    Handles common email client quote formats.
+    Stops at the first recognized reply marker (e.g., 'On ... wrote:').
     """
     if not text:
         return text
 
-    # Common patterns for quoted replies
-    patterns = [
-        # Gmail style
-        r'On.*wrote:.*$',
-        # Outlook style
-        r'From:.*Sent:.*To:.*Subject:.*$',
-        # Generic quote markers
-        r'^>.*$',
-        # Common email client signatures
-        r'--\s*$',
-        r'_{2,}$',
-        r'={2,}$'
+    # Patterns that indicate the start of quoted content
+    reply_markers = [
+        r'^On .+wrote:$',  # Gmail, Outlook, etc.
+        r'^From:.*Sent:.*To:.*Subject:.*$',  # Outlook
+        r'^>.*$',  # Quoted lines
+        r'^--\s*$',  # Signature
+        r'^_{2,}$',
+        r'^={2,}$'
     ]
 
-    # Split by lines and filter out quoted content
     lines = text.split('\n')
     filtered_lines = []
-    in_quote = False
-
     for line in lines:
-        # Check if this line starts a quote block
-        if any(re.match(pattern, line.strip()) for pattern in patterns):
-            in_quote = True
-            continue
-        
-        # If we're in a quote block, check if this line is part of it
-        if in_quote:
-            if line.strip().startswith('>'):
-                continue
-            if not line.strip():  # Empty line might end the quote
-                in_quote = False
-            continue
-
+        if any(re.match(pattern, line.strip()) for pattern in reply_markers):
+            break  # Stop at the first reply marker
         filtered_lines.append(line)
-
-    # Join the lines back together
     cleaned_text = '\n'.join(filtered_lines).strip()
     logger.info(f"Original text length: {len(text)}, Cleaned text length: {len(cleaned_text)}")
     return cleaned_text
