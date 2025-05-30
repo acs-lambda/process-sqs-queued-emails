@@ -30,7 +30,7 @@ def update_thread_with_attributes(conversation_id: str) -> None:
     try:
         # Invoke get-thread-attrs lambda
         response = lambda_client.invoke(
-            FunctionName='get-thread-attrs',
+            FunctionName='getThreadAttrs',
             InvocationType='RequestResponse',
             Payload=json.dumps({
                 'body': json.dumps({
