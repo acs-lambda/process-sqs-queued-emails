@@ -224,7 +224,7 @@ def lambda_handler(event, context):
                 if not email_data['is_first']:
                     if 'Item' in thread_response:
                         lcp_enabled = thread_response['Item'].get('lcp_enabled', 'false')
-                        should_generate_response = lcp_enabled == 'true'
+                        should_generate_response = lcp_enabled == True
                         logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
 
                 if should_generate_response:
