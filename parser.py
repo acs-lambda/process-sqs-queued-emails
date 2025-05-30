@@ -4,6 +4,7 @@ from email.parser import BytesParser
 import re
 from typing import Tuple, Optional
 import logging
+import email.utils
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -149,3 +150,61 @@ def extract_email_from_text(content: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error extracting email: {str(e)}")
         return None
+
+def extract_user_info_from_headers(msg) -> dict:
+    """
+    Extracts user information from standard email headers.
+    Only extracts information that is explicitly present in the headers.
+    """
+    user_info = {}
+    
+    # Extract and parse From header which often contains name and email
+    from_header = msg.get('From', '')
+    if from_header:
+        user_info['from_header'] = from_header
+        # Try to parse name and email from From header
+        # Common format: "John Doe <john.doe@example.com>"
+        try:
+            name, email_addr = email.utils.parseaddr(from_header)
+            if name:
+                user_info['sender_name'] = name
+            if email_addr:
+                user_info['sender_email'] = email_addr.lower()
+        except Exception as e:
+            logger.error(f"Error parsing From header: {str(e)}")
+
+    # Extract Reply-To header if present
+    reply_to = msg.get('Reply-To', '')
+    if reply_to:
+        user_info['reply_to'] = reply_to
+        # Try to parse name and email from Reply-To header
+        try:
+            name, email_addr = email.utils.parseaddr(reply_to)
+            if name:
+                user_info['reply_to_name'] = name
+            if email_addr:
+                user_info['reply_to_email'] = email_addr.lower()
+        except Exception as e:
+            logger.error(f"Error parsing Reply-To header: {str(e)}")
+
+    # Extract Organization header if present
+    organization = msg.get('Organization', '')
+    if organization:
+        user_info['organization'] = organization
+
+    # Extract X-Mailer header which might indicate email client
+    mailer = msg.get('X-Mailer', '')
+    if mailer:
+        user_info['mailer'] = mailer
+
+    # Extract X-Originating-IP header if present
+    originating_ip = msg.get('X-Originating-IP', '')
+    if originating_ip:
+        user_info['originating_ip'] = originating_ip
+
+    # Extract X-Forwarded-For header if present
+    forwarded_for = msg.get('X-Forwarded-For', '')
+    if forwarded_for:
+        user_info['forwarded_for'] = forwarded_for
+
+    return user_info
