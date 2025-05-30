@@ -19,10 +19,13 @@ def strip_quoted_reply(text: str) -> str:
 
     # Patterns that indicate the start of quoted content
     reply_markers = [
-        r'^On .+wrote:$',  # Gmail, Outlook, etc.
-        r'^From:.*Sent:.*To:.*Subject:.*$',  # Outlook
-        r'^>.*$',  # Quoted lines
-        r'^--\s*$',  # Signature
+        r'^On .+?\d{4}.*wrote:$',  # Most common: On Fri, May 30, 2025 at 12:13 PM <email> wrote:
+        r'^From:.*$',               # Outlook, Apple Mail, etc.
+        r'^Sent:.*$',               # Outlook
+        r'^To:.*$',                 # Outlook
+        r'^Subject:.*$',            # Outlook
+        r'^>.*$',                   # Quoted lines
+        r'^--\s*$',                # Signature
         r'^_{2,}$',
         r'^={2,}$'
     ]
@@ -30,7 +33,8 @@ def strip_quoted_reply(text: str) -> str:
     lines = text.split('\n')
     filtered_lines = []
     for line in lines:
-        if any(re.match(pattern, line.strip()) for pattern in reply_markers):
+        if any(re.match(pattern, line.strip(), re.IGNORECASE) for pattern in reply_markers):
+            logger.info(f"Stripping quoted reply at line: {line.strip()}")
             break  # Stop at the first reply marker
         filtered_lines.append(line)
     cleaned_text = '\n'.join(filtered_lines).strip()
