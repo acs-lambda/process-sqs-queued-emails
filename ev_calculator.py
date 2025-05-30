@@ -16,11 +16,7 @@ def calc_ev(messages: list) -> int:
     }
     payload_messages = [{
         "role": "system",
-        "content": '''The assistant should only respond with a number. This number will be in the range from 0-100. This number will indicate how interested a prospective buyer of a property is interested in it. The assistant will do this buy looking at a series of emails. These emails will be from the prospective buyer and an realtor helping the buyer. Each email will be sent as a separate message by the user, and the first word will indicate if the email was sent by a buyer or an realtor. 
-                    If the first word is BUYER: the email that follows is sent by a buyer. 
-                    If the first word is REALTOR: the email that follows is sent by a realtor. 
-                    The assistant will analyze the given information, and reply with the number that indicates the interest of the prospective buyer of the property.
-                    Regardless of the input, reply with a number 0-100.'''
+        "content": '''You are an assistant that must ONLY respond with a single integer number from 0 to 100, with NO extra text, explanation, or formatting. Do not say anything else, do not explain, do not apologize, do not repeat the question. Just output a number from 0 to 100. This number will indicate how interested a prospective buyer of a property is, based on a series of emails. Each email will be sent as a separate message by the user, and the first word will indicate if the email was sent by a buyer or a realtor.\nIf the first word is BUYER: the email that follows is sent by a buyer.\nIf the first word is REALTOR: the email that follows is sent by a realtor.\nRegardless of the input, reply ONLY with a number from 0 to 100.'''
     }]
     payload_messages.extend(messages)
     payload = {
