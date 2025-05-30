@@ -87,6 +87,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             Item={
                 'conversation_id': data['conv_id'],
                 'response_id': data['msg_id_hdr'],
+                'in_reply_to': data['in_reply_to'],
                 'timestamp': data['timestamp'],
                 'sender': data['source'],
                 'receiver': data['destination'],

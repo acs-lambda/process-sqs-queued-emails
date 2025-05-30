@@ -70,11 +70,15 @@ def format_conversation_for_llm(email_chain):
     """
     formatted_messages = [realtor_role]
     
-    for email in email_chain:
+    logger.info(f"Formatting conversation for LLM. Chain length: {len(email_chain)}")
+    for i, email in enumerate(email_chain):
         # Format each email with both subject and body
         email_content = f"Subject: {email.get('subject', '')}\n\nBody: {email.get('body', '')}"
+        role = "user" if email.get('type') == 'inbound-email' else "assistant"
+        logger.info(f"Email {i+1} - Role: {role}, Subject: {email.get('subject', '')}, Body length: {len(email.get('body', ''))}")
+        
         formatted_messages.append({
-            "role": "user" if email.get('type') == 'inbound-email' else "assistant",
+            "role": role,
             "content": email_content
         })
     
@@ -95,6 +99,13 @@ def generate_email_response(emails, uid):
             logger.error("Empty email chain provided")
             raise ValueError("Empty email chain")
 
+        logger.info(f"Generating email response for chain of {len(emails)} emails")
+        for i, email in enumerate(emails):
+            logger.info(f"Input email {i+1}:")
+            logger.info(f"  Subject: {email.get('subject', '')}")
+            logger.info(f"  Body: {email.get('body', '')[:100]}...")  # First 100 chars
+            logger.info(f"  Type: {email.get('type', 'unknown')}")
+
         # Format the conversation for the LLM
         formatted_messages = format_conversation_for_llm(emails)
         
@@ -106,7 +117,8 @@ def generate_email_response(emails, uid):
         
         # Get response from LLM
         response = send_message_to_llm(formatted_messages)
-        logger.info("Successfully generated email response")
+        logger.info(f"Generated response length: {len(response)}")
+        logger.info(f"Response preview: {response[:100]}...")  # First 100 chars
         return response
         
     except Exception as e:
