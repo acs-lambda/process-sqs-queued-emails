@@ -118,7 +118,7 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
                     'associated_account': data['account_id'],
                     'read': False,
                     'lcp_enabled': True,
-                    'lcp_flag_threshold': 80,  # Default threshold
+                    'lcp_flag_threshold': '80',  # Store as string
                     'flag': ev_score >= 80  # Set initial flag based on EV score
                 }
             )
@@ -188,7 +188,8 @@ def lambda_handler(event, context):
                 # Get threshold from thread or use default
                 threshold = 80  # Default threshold
                 if 'Item' in thread_response:
-                    threshold = thread_response['Item'].get('lcp_flag_threshold', 80)
+                    # Convert Decimal to int if it exists
+                    threshold = int(thread_response['Item'].get('lcp_flag_threshold', 80))
                 
                 # Store the email data with the EV score
                 if not store_email_data(email_data, ev):
