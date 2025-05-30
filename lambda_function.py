@@ -48,7 +48,19 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         user_info = extract_user_info_from_headers(msg)
         
         # Use both In-Reply-To and References for better threading
-        conv_id = get_conversation_id(in_reply_to) or get_conversation_id(references) or str(uuid.uuid4())
+        conv_id = None
+        if in_reply_to:
+            conv_id = get_conversation_id(in_reply_to)
+            logger.info(f"Found conversation ID from in_reply_to: {conv_id}")
+        if not conv_id and references:
+            conv_id = get_conversation_id(references)
+            logger.info(f"Found conversation ID from references: {conv_id}")
+        
+        # Only generate new UUID if we couldn't find an existing conversation
+        if not conv_id:
+            conv_id = str(uuid.uuid4())
+            logger.info(f"Generated new conversation ID: {conv_id}")
+        
         account_id = get_associated_account(destination)
         
         if not account_id:
@@ -57,6 +69,7 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
         timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
         is_first = not bool(in_reply_to or references)
+        logger.info(f"Email is_first: {is_first}, conv_id: {conv_id}, in_reply_to: {in_reply_to}, references: {references}")
 
         return {
             'source': source,
@@ -108,22 +121,31 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
 
         threads_table = dynamodb.Table('Threads')
         
-        if data['is_first']:
-            # Store in Threads table for new conversations
+        # Check if thread exists
+        thread_response = threads_table.get_item(
+            Key={
+                'conversation_id': data['conv_id']
+            }
+        )
+        
+        if data['is_first'] and 'Item' not in thread_response:
+            # Only create new thread if it's first email and thread doesn't exist
+            logger.info(f"Creating new thread for conversation {data['conv_id']}")
             threads_table.put_item(
                 Item={
                     'conversation_id': data['conv_id'],
                     'source': data['source'],
-                    'source_name': sender_name,  # Only store sender name in Threads table
+                    'source_name': sender_name,
                     'associated_account': data['account_id'],
                     'read': False,
                     'lcp_enabled': True,
-                    'lcp_flag_threshold': '80',  # Store as string
-                    'flag': ev_score >= 80  # Set initial flag based on EV score
+                    'lcp_flag_threshold': '80',
+                    'flag': ev_score >= 80
                 }
             )
-        else:
-            # Update existing thread to mark as unread and check flag threshold
+        elif 'Item' in thread_response:
+            # Update existing thread
+            logger.info(f"Updating existing thread for conversation {data['conv_id']}")
             threads_table.update_item(
                 Key={
                     'conversation_id': data['conv_id']
@@ -135,9 +157,11 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
                 },
                 ExpressionAttributeValues={
                     ':read': False,
-                    ':flag': ev_score >= 80  # Update flag based on current EV score
+                    ':flag': ev_score >= 80
                 }
             )
+        else:
+            logger.warning(f"Thread not found for non-first email conversation {data['conv_id']}")
 
         return True
     except Exception as e:
