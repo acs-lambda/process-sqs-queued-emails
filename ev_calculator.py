@@ -1,7 +1,12 @@
 # ev_calculator.py
 import requests
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 def calc_ev(messages: list) -> int:
+    logger.info(f"Calculating EV for {len(messages)} messages")
     tai_key = '2e1a1e910693ae18c09ad0585a7645e0f4595e90ec35bb366b6f5520221b6ca7'
     url = "https://api.together.xyz/v1/chat/completions"
 
@@ -47,6 +52,10 @@ def calc_ev(messages: list) -> int:
 
 
 def parse_messages(realtor_email: str, emails: list) -> list:
+    logger.info(f"Parsing messages for EV calculation. Chain length: {len(emails)}")
+    for i, email in enumerate(emails):
+        logger.info(f"Message {i+1} - Sender: {email['sender']}, Body length: {len(email['body'])}")
+    
     messages = []
     for email in emails:
         if email['sender'].split('@')[1] == 'lgw.automatedconsultancy.com':

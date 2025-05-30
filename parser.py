@@ -8,6 +8,54 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+def strip_quoted_reply(text: str) -> str:
+    """
+    Strips out quoted reply text from email body.
+    Handles common email client quote formats.
+    """
+    if not text:
+        return text
+
+    # Common patterns for quoted replies
+    patterns = [
+        # Gmail style
+        r'On.*wrote:.*$',
+        # Outlook style
+        r'From:.*Sent:.*To:.*Subject:.*$',
+        # Generic quote markers
+        r'^>.*$',
+        # Common email client signatures
+        r'--\s*$',
+        r'_{2,}$',
+        r'={2,}$'
+    ]
+
+    # Split by lines and filter out quoted content
+    lines = text.split('\n')
+    filtered_lines = []
+    in_quote = False
+
+    for line in lines:
+        # Check if this line starts a quote block
+        if any(re.match(pattern, line.strip()) for pattern in patterns):
+            in_quote = True
+            continue
+        
+        # If we're in a quote block, check if this line is part of it
+        if in_quote:
+            if line.strip().startswith('>'):
+                continue
+            if not line.strip():  # Empty line might end the quote
+                in_quote = False
+            continue
+
+        filtered_lines.append(line)
+
+    # Join the lines back together
+    cleaned_text = '\n'.join(filtered_lines).strip()
+    logger.info(f"Original text length: {len(text)}, Cleaned text length: {len(cleaned_text)}")
+    return cleaned_text
+
 def parse_email(email_content: bytes) -> Tuple[Optional[object], Optional[str]]:
     """
     Parses raw email bytes and returns the email message and plain text part.
@@ -46,6 +94,11 @@ def parse_email(email_content: bytes) -> Tuple[Optional[object], Optional[str]]:
             plain_text = re.sub(r'<[^>]+>', ' ', html_text)
             plain_text = re.sub(r'\s+', ' ', plain_text).strip()
 
+        # Clean the text by removing quoted replies
+        if plain_text:
+            plain_text = strip_quoted_reply(plain_text)
+            logger.info(f"Cleaned email body: {plain_text[:100]}...")  # Log first 100 chars
+
         return msg, plain_text
     except Exception as e:
         logger.error(f"Error parsing email: {str(e)}")
@@ -69,6 +122,7 @@ def extract_email_headers(msg) -> Tuple[str, str, str]:
         if in_reply_to and in_reply_to not in references:
             references = f"{references} {in_reply_to}".strip()
 
+        logger.info(f"Extracted headers - Message-ID: {msg_id}, In-Reply-To: {in_reply_to}, References: {references}")
         return msg_id, in_reply_to, references
     except Exception as e:
         logger.error(f"Error extracting headers: {str(e)}")
