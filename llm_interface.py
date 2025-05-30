@@ -87,7 +87,11 @@ def format_conversation_for_llm(email_chain):
 
 def send_introductory_email(starting_msg, uid):
     # template = get_template_to_use(uid)
-    return send_message_to_llm([realtor_role, {"role": "system", "content": "Make sure to not include anything else in your response other than the response you give as you emulate a realtor."}, {"role": "user", "content": "Subject: " +starting_msg['subject'] +"\n\nBody:" + starting_msg['body']}])
+    return send_message_to_llm([
+        realtor_role,
+        {"role": "system", "content": "ONLY output the body of the email reply. Do NOT include the subject, signature, closing, sender name, or any extra text. Only the main message body as you would write it in the email editor."},
+        {"role": "user", "content": "Subject: " +starting_msg['subject'] +"\n\nBody:" + starting_msg['body']}
+    ])
 
 def generate_email_response(emails, uid):
     """
@@ -112,7 +116,7 @@ def generate_email_response(emails, uid):
         # Add the system message for consistent formatting
         formatted_messages.append({
             "role": "system",
-            "content": "Make sure to not include anything else in your response other than the response you give as you emulate a realtor."
+            "content": "ONLY output the body of the email reply. Do NOT include the subject, signature, closing, sender name, or any extra text. Only the main message body as you would write it in the email editor."
         })
         
         # Get response from LLM
