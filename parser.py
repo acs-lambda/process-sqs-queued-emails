@@ -108,20 +108,23 @@ def parse_email(email_content: bytes) -> Tuple[Optional[object], Optional[str]]:
 def extract_email_headers(msg) -> Tuple[str, str, str]:
     """
     Returns Message-ID, In-Reply-To, References headers.
-    Normalizes all IDs by stripping angle brackets for consistent comparison/storage.
+    Normalizes all IDs by stripping angle brackets and domain for consistent comparison/storage.
     """
     try:
-        def strip_angle_brackets(msg_id):
-            return msg_id.strip().lstrip('<').rstrip('>') if msg_id else ''
+        def normalize_msg_id(msg_id):
+            if not msg_id:
+                return ''
+            msg_id = msg_id.strip().lstrip('<').rstrip('>')
+            return msg_id.split('@')[0]
 
         msg_id = msg.get('Message-ID', '').strip()
         in_reply_to = msg.get('In-Reply-To', '').strip()
         references = msg.get('References', '').strip()
 
-        # Normalize all IDs by stripping angle brackets
-        msg_id = strip_angle_brackets(msg_id)
-        in_reply_to = strip_angle_brackets(in_reply_to)
-        references = ' '.join([strip_angle_brackets(ref) for ref in references.split()])
+        # Normalize all IDs by stripping angle brackets and domain
+        msg_id = normalize_msg_id(msg_id)
+        in_reply_to = normalize_msg_id(in_reply_to)
+        references = ' '.join([normalize_msg_id(ref) for ref in references.split()])
 
         # Combine References and In-Reply-To for better threading
         if in_reply_to and in_reply_to not in references:
