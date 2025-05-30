@@ -117,21 +117,25 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
                     'source_name': sender_name,  # Only store sender name in Threads table
                     'associated_account': data['account_id'],
                     'read': False,
-                    'lcp_enabled': True
+                    'lcp_enabled': True,
+                    'lcp_flag_threshold': 80,  # Default threshold
+                    'flag': ev_score >= 80  # Set initial flag based on EV score
                 }
             )
         else:
-            # Update existing thread to mark as unread
+            # Update existing thread to mark as unread and check flag threshold
             threads_table.update_item(
                 Key={
                     'conversation_id': data['conv_id']
                 },
-                UpdateExpression='SET #read = :read',
+                UpdateExpression='SET #read = :read, #flag = :flag',
                 ExpressionAttributeNames={
-                    '#read': 'read'
+                    '#read': 'read',
+                    '#flag': 'flag'
                 },
                 ExpressionAttributeValues={
-                    ':read': False
+                    ':read': False,
+                    ':flag': ev_score >= 80  # Update flag based on current EV score
                 }
             )
 
@@ -173,38 +177,62 @@ def lambda_handler(event, context):
                 ev = calc_ev(parse_messages(realtor_email, chain))
                 logger.info(f"EV score calculated: {ev} for conversation {email_data['conv_id']} with chain length {len(chain)}")
 
+                # Get thread information to check thresholds
+                threads_table = dynamodb.Table('Threads')
+                thread_response = threads_table.get_item(
+                    Key={
+                        'conversation_id': email_data['conv_id']
+                    }
+                )
+                
+                # Get threshold from thread or use default
+                threshold = 80  # Default threshold
+                if 'Item' in thread_response:
+                    threshold = thread_response['Item'].get('lcp_flag_threshold', 80)
+                
                 # Store the email data with the EV score
                 if not store_email_data(email_data, ev):
                     continue
 
-                # Generate response
-                response = generate_email_response(
-                    chain if not email_data['is_first'] else [{'subject': email_data['subject'], 'body': email_data['text_body']}],
-                    email_data['account_id']
-                )
+                # Check if we should generate and send response
+                should_generate_response = True
+                if not email_data['is_first']:
+                    if 'Item' in thread_response:
+                        lcp_enabled = thread_response['Item'].get('lcp_enabled', 'false')
+                        should_generate_response = lcp_enabled == 'true'
+                        logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
 
-                # Prepare and schedule the response
-                payload = {
-                    'response_body': response,
-                    'account': email_data['account_id'],
-                    'target': email_data['source'],
-                    'in_reply_to': email_data['msg_id_hdr'],
-                    'conversation_id': email_data['conv_id'],
-                    'subject': email_data['subject'],
-                    'ev_score': ev
-                }
+                if should_generate_response:
+                    # Generate response
+                    response = generate_email_response(
+                        chain if not email_data['is_first'] else [{'subject': email_data['subject'], 'body': email_data['text_body']}],
+                        email_data['account_id']
+                    )
 
-                schedule_name = generate_safe_schedule_name(
-                    f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
-                )
-                schedule_time = datetime.utcnow() + timedelta(seconds=10)
-                
-                schedule_email_processing(
-                    schedule_name,
-                    schedule_time,
-                    payload,
-                    email_data['in_reply_to']
-                )
+                    # Prepare and schedule the response
+                    payload = {
+                        'response_body': response,
+                        'account': email_data['account_id'],
+                        'target': email_data['source'],
+                        'in_reply_to': email_data['msg_id_hdr'],
+                        'conversation_id': email_data['conv_id'],
+                        'subject': email_data['subject'],
+                        'ev_score': ev
+                    }
+
+                    schedule_name = generate_safe_schedule_name(
+                        f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
+                    )
+                    schedule_time = datetime.utcnow() + timedelta(seconds=10)
+                    
+                    schedule_email_processing(
+                        schedule_name,
+                        schedule_time,
+                        payload,
+                        email_data['in_reply_to']
+                    )
+                else:
+                    logger.info(f"Skipping response generation for conversation {email_data['conv_id']} as lcp_enabled is not 'true'")
 
                 # Only delete from SQS after successful processing
                 sqs.delete_message(
