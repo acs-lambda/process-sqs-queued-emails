@@ -75,7 +75,7 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         logger.error(f"Error processing email record: {str(e)}")
         return None
 
-def store_email_data(data: Dict[str, Any]) -> bool:
+def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
     """
     Store email data in DynamoDB tables.
     Returns True if successful, False otherwise.
@@ -97,7 +97,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
                 's3_location': data['s3_key'],
                 'type': 'inbound-email',
                 'is_first_email': '1' if data['is_first'] else '0',
-                'ev_score': '-1'  # Will be updated after EV calculation
+                'ev_score': str(ev_score)
             }
         )
 
@@ -136,15 +136,25 @@ def lambda_handler(event, context):
                 if not email_data:
                     continue
 
-                # Store the email data
-                if not store_email_data(email_data):
-                    continue
-
                 # Calculate EV and generate response
                 chain = get_email_chain(email_data['conv_id'])
-                chain.append({'sender': email_data['source'], 'body': email_data['text_body']})
                 realtor_email = get_account_email(email_data['account_id'])
+                # If the just-processed email is not in the chain, add it for EV calculation
+                if not any(item.get('response_id') == email_data['msg_id_hdr'] for item in chain):
+                    chain.append({
+                        'subject': email_data['subject'],
+                        'body': email_data['text_body'],
+                        'sender': email_data['source'],
+                        'timestamp': email_data['timestamp'],
+                        'type': 'inbound-email',
+                        'response_id': email_data['msg_id_hdr']
+                    })
                 ev = calc_ev(parse_messages(realtor_email, chain))
+                logger.info(f"EV score calculated: {ev} for conversation {email_data['conv_id']} with chain length {len(chain)}")
+
+                # Store the email data with the EV score
+                if not store_email_data(email_data, ev):
+                    continue
 
                 # Generate response
                 response = generate_email_response(
