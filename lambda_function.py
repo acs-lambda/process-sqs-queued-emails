@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any, Optional
 
 from config import BUCKET_NAME, QUEUE_URL, AWS_REGION
-from parser import parse_email, extract_email_headers, extract_email_from_text
+from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
 from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from ev_calculator import calc_ev, parse_messages
@@ -45,6 +45,7 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             return None
 
         msg_id_hdr, in_reply_to, references = extract_email_headers(msg)
+        user_info = extract_user_info_from_headers(msg)
         
         # Use both In-Reply-To and References for better threading
         conv_id = get_conversation_id(in_reply_to) or get_conversation_id(references) or str(uuid.uuid4())
@@ -69,7 +70,8 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             'account_id': account_id,
             'timestamp': timestamp,
             'is_first': is_first,
-            'text_body': text_body
+            'text_body': text_body,
+            'user_info': user_info
         }
     except Exception as e:
         logger.error(f"Error processing email record: {str(e)}")
@@ -81,6 +83,9 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
     Returns True if successful, False otherwise.
     """
     try:
+        # Get sender name from user_info if available
+        sender_name = data['user_info'].get('sender_name', '')
+        
         # Store in Conversations table
         conversations_table = dynamodb.Table('Conversations')
         conversations_table.put_item(
@@ -101,16 +106,32 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
             }
         )
 
+        threads_table = dynamodb.Table('Threads')
+        
         if data['is_first']:
             # Store in Threads table for new conversations
-            threads_table = dynamodb.Table('Threads')
             threads_table.put_item(
                 Item={
                     'conversation_id': data['conv_id'],
                     'source': data['source'],
+                    'source_name': sender_name,  # Only store sender name in Threads table
                     'associated_account': data['account_id'],
                     'read': False,
                     'lcp_enabled': True
+                }
+            )
+        else:
+            # Update existing thread to mark as unread
+            threads_table.update_item(
+                Key={
+                    'conversation_id': data['conv_id']
+                },
+                UpdateExpression='SET #read = :read',
+                ExpressionAttributeNames={
+                    '#read': 'read'
+                },
+                ExpressionAttributeValues={
+                    ':read': False
                 }
             )
 
