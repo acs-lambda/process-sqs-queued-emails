@@ -12,32 +12,82 @@ logger.setLevel(logging.INFO)
 def strip_quoted_reply(text: str) -> str:
     """
     Strips out quoted reply text from email body.
-    Stops at the first recognized reply marker (e.g., 'On ... wrote:').
+    Handles various email client formats and reply markers.
     """
     if not text:
         return text
 
     # Patterns that indicate the start of quoted content
     reply_markers = [
+        # Common reply headers
         r'^On .+?\d{4}.*wrote:$',  # Most common: On Fri, May 30, 2025 at 12:13 PM <email> wrote:
+        r'^On .+?\d{4}.*\n.*wrote:$',  # Multi-line version
         r'^From:.*$',               # Outlook, Apple Mail, etc.
         r'^Sent:.*$',               # Outlook
         r'^To:.*$',                 # Outlook
         r'^Subject:.*$',            # Outlook
+        r'^Date:.*$',               # Common email header
+        r'^Cc:.*$',                 # CC header
+        r'^Bcc:.*$',                # BCC header
+        
+        # Quoted content indicators
         r'^>.*$',                   # Quoted lines
         r'^--\s*$',                # Signature
-        r'^_{2,}$',
-        r'^={2,}$'
+        r'^_{2,}$',                # Separator
+        r'^={2,}$',                # Separator
+        
+        # Additional email client specific patterns
+        r'^Begin forwarded message:$',
+        r'^Forwarded by .*$',
+        r'^From:.*\nSent:.*\nTo:.*$',  # Multi-line Outlook header
+        r'^On .* wrote:.*$',           # Alternative format
+        r'^On .* \d{1,2}/\d{1,2}/\d{2,4}.*wrote:$',  # Date format variations
+        r'^On .* \d{1,2} \w+ \d{4}.*wrote:$',        # Another date format
     ]
 
+    # Split into lines and process
     lines = text.split('\n')
     filtered_lines = []
-    for line in lines:
-        if any(re.match(pattern, line.strip(), re.IGNORECASE) for pattern in reply_markers):
-            logger.info(f"Stripping quoted reply at line: {line.strip()}")
-            break  # Stop at the first reply marker
-        filtered_lines.append(line)
-    cleaned_text = '\n'.join(filtered_lines).strip()
+    in_quoted_section = False
+    consecutive_empty_lines = 0
+    
+    for i, line in enumerate(lines):
+        line = line.rstrip()  # Remove trailing whitespace
+        
+        # Check if this line starts a quoted section
+        if not in_quoted_section:
+            if any(re.match(pattern, line.strip(), re.IGNORECASE) for pattern in reply_markers):
+                logger.info(f"Found reply marker at line {i}: {line.strip()}")
+                in_quoted_section = True
+                continue
+                
+            # Check for multi-line patterns (e.g., Outlook headers)
+            if i < len(lines) - 1:
+                next_line = lines[i + 1].strip()
+                combined = f"{line}\n{next_line}"
+                if any(re.match(pattern, combined, re.IGNORECASE) for pattern in reply_markers):
+                    logger.info(f"Found multi-line reply marker at line {i}")
+                    in_quoted_section = True
+                    continue
+        
+        # If we're not in a quoted section, keep the line
+        if not in_quoted_section:
+            if line.strip() == '':
+                consecutive_empty_lines += 1
+                # Only keep up to 2 consecutive empty lines
+                if consecutive_empty_lines <= 2:
+                    filtered_lines.append(line)
+            else:
+                consecutive_empty_lines = 0
+                filtered_lines.append(line)
+    
+    # Join lines and clean up
+    cleaned_text = '\n'.join(filtered_lines)
+    
+    # Remove excessive whitespace
+    cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)  # Replace 3+ newlines with 2
+    cleaned_text = cleaned_text.strip()
+    
     logger.info(f"Original text length: {len(text)}, Cleaned text length: {len(cleaned_text)}")
     return cleaned_text
 
