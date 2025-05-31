@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 
 from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
-from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item
+from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item, invoke_db_select
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 
 # Set up logging
@@ -200,7 +200,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
         # Check if thread exists using db-select
         existing_thread = invoke_db_select(
             table_name='Threads',
-            index_name=None,  # Primary key query
+            index_name='conversation_id-index',  # Primary key query
             key_name='conversation_id',
             key_value=data['conv_id']
         )
