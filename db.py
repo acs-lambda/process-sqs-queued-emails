@@ -53,7 +53,10 @@ def get_conversation_id(message_id: str) -> Optional[str]:
         key_value=message_id
     )
     
-    return result.get('conversation_id') if result else None
+    # Handle list response
+    if isinstance(result, list) and result:
+        return result[0].get('conversation_id')
+    return None
 
 def get_associated_account(email: str) -> Optional[str]:
     """Get account ID by email."""
@@ -64,7 +67,10 @@ def get_associated_account(email: str) -> Optional[str]:
         key_value=email.lower()
     )
     
-    return result.get('id') if result else None
+    # Handle list response
+    if isinstance(result, list) and result:
+        return result[0].get('id')
+    return None
 
 def get_email_chain(conversation_id: str) -> List[Dict[str, Any]]:
     """Get email chain for a conversation."""
@@ -75,12 +81,12 @@ def get_email_chain(conversation_id: str) -> List[Dict[str, Any]]:
         key_value=conversation_id
     )
     
-    if not result or 'Items' not in result:
+    # Handle list response directly
+    if not isinstance(result, list):
         return []
         
     # Sort by timestamp and format items
-    items = result['Items']
-    sorted_items = sorted(items, key=lambda x: x.get('timestamp', ''))
+    sorted_items = sorted(result, key=lambda x: x.get('timestamp', ''))
     
     return [{
         'subject': item.get('subject', ''),
@@ -99,7 +105,10 @@ def get_account_email(account_id: str) -> Optional[str]:
         key_value=account_id
     )
     
-    return result.get('responseEmail') if result else None
+    # Handle list response
+    if isinstance(result, list) and result:
+        return result[0].get('responseEmail')
+    return None
 
 def update_thread_attributes(conversation_id: str, attributes: Dict[str, Any]) -> bool:
     """Update thread with new attributes using direct DynamoDB access."""
