@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 
 from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
-from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes
+from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 
 # Set up logging
@@ -130,7 +130,8 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def store_email_data(data: Dict[str, Any]) -> bool:
     """
-    Store email data in DynamoDB tables using db-select.
+    Store email data in DynamoDB tables.
+    Uses db-select for reads and direct DynamoDB access for writes.
     Returns True if successful, False otherwise.
     """
     try:
@@ -153,18 +154,8 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             'is_first_email': '1' if data['is_first'] else '0'
         }
         
-        # Store in Conversations table using db-select
-        result = invoke_db_select(
-            table_name='Conversations',
-            index_name=None,  # Primary key query
-            key_name='conversation_id',
-            key_value={
-                'operation': 'put_item',
-                'item': conversation_data
-            }
-        )
-        
-        if not result or not result.get('success', False):
+        # Store in Conversations table using direct DynamoDB access
+        if not store_conversation_item(conversation_data):
             logger.error(f"Failed to store conversation data for {data['conv_id']}")
             return False
 
@@ -180,7 +171,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             'flag': False  # Will be updated by generate-ev lambda
         }
         
-        # Check if thread exists
+        # Check if thread exists using db-select
         existing_thread = invoke_db_select(
             table_name='Threads',
             index_name=None,  # Primary key query
@@ -191,36 +182,14 @@ def store_email_data(data: Dict[str, Any]) -> bool:
         if data['is_first'] and not existing_thread:
             # Only create new thread if it's first email and thread doesn't exist
             logger.info(f"Creating new thread for conversation {data['conv_id']}")
-            result = invoke_db_select(
-                table_name='Threads',
-                index_name=None,  # Primary key query
-                key_name='conversation_id',
-                key_value={
-                    'operation': 'put_item',
-                    'item': thread_data
-                }
-            )
-            
-            if not result or not result.get('success', False):
+            if not store_thread_item(thread_data):
                 logger.error(f"Failed to create thread for {data['conv_id']}")
                 return False
                 
         elif existing_thread:
-            # Update existing thread
+            # Update existing thread using direct DynamoDB access
             logger.info(f"Updating existing thread for conversation {data['conv_id']}")
-            result = invoke_db_select(
-                table_name='Threads',
-                index_name=None,  # Primary key query
-                key_name='conversation_id',
-                key_value={
-                    'operation': 'update_item',
-                    'update': {
-                        'read': False
-                    }
-                }
-            )
-            
-            if not result or not result.get('success', False):
+            if not update_thread_read_status(data['conv_id'], False):
                 logger.error(f"Failed to update thread for {data['conv_id']}")
                 return False
         else:
