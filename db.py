@@ -34,7 +34,8 @@ def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, 
         if response_payload['statusCode'] != 200:
             logger.error(f"Database Lambda failed: {response_payload}")
             return None
-            
+        
+        logger.info(f"Database Lambda response: {response_payload}")
         return json.loads(response_payload['body'])
     except Exception as e:
         logger.error(f"Error invoking database Lambda: {str(e)}")
