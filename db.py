@@ -9,10 +9,11 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 lambda_client = boto3.client('lambda', region_name=AWS_REGION)
+dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
 
 def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, key_value: Any) -> Optional[Dict[str, Any]]:
     """
-    Generic function to invoke the db-select Lambda.
+    Generic function to invoke the db-select Lambda for read operations only.
     Returns the parsed response or None if the invocation failed.
     """
     try:
@@ -100,22 +101,69 @@ def get_account_email(account_id: str) -> Optional[str]:
     return result.get('responseEmail') if result else None
 
 def update_thread_attributes(conversation_id: str, attributes: Dict[str, Any]) -> bool:
-    """Update thread with new attributes."""
+    """Update thread with new attributes using direct DynamoDB access."""
     try:
-        # Convert attributes to the format expected by db-select
-        update_data = {
-            'conversation_id': conversation_id,
-            'attributes': attributes
-        }
+        threads_table = dynamodb.Table('Threads')
         
-        result = invoke_db_select(
-            table_name='Threads',
-            index_name=None,  # Primary key query
-            key_name='conversation_id',
-            key_value=update_data
+        # Build update expression and attribute values
+        update_expr = "SET "
+        expr_attr_values = {}
+        expr_attr_names = {}
+        
+        for i, (key, value) in enumerate(attributes.items()):
+            placeholder = f":val{i}"
+            name_placeholder = f"#attr{i}"
+            update_expr += f"{name_placeholder} = {placeholder}, "
+            expr_attr_values[placeholder] = value
+            expr_attr_names[name_placeholder] = key
+        
+        # Remove trailing comma and space
+        update_expr = update_expr[:-2]
+        
+        threads_table.update_item(
+            Key={'conversation_id': conversation_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=expr_attr_values,
+            ExpressionAttributeNames=expr_attr_names
         )
         
-        return result.get('success', False) if result else False
+        logger.info(f"Successfully updated thread attributes for conversation {conversation_id}")
+        return True
     except Exception as e:
         logger.error(f"Error updating thread attributes: {str(e)}")
+        return False
+
+def store_conversation_item(item: Dict[str, Any]) -> bool:
+    """Store a conversation item using direct DynamoDB access."""
+    try:
+        conversations_table = dynamodb.Table('Conversations')
+        conversations_table.put_item(Item=item)
+        return True
+    except Exception as e:
+        logger.error(f"Error storing conversation item: {str(e)}")
+        return False
+
+def store_thread_item(item: Dict[str, Any]) -> bool:
+    """Store a thread item using direct DynamoDB access."""
+    try:
+        threads_table = dynamodb.Table('Threads')
+        threads_table.put_item(Item=item)
+        return True
+    except Exception as e:
+        logger.error(f"Error storing thread item: {str(e)}")
+        return False
+
+def update_thread_read_status(conversation_id: str, read_status: bool) -> bool:
+    """Update thread read status using direct DynamoDB access."""
+    try:
+        threads_table = dynamodb.Table('Threads')
+        threads_table.update_item(
+            Key={'conversation_id': conversation_id},
+            UpdateExpression='SET #read = :read',
+            ExpressionAttributeNames={'#read': 'read'},
+            ExpressionAttributeValues={':read': read_status}
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Error updating thread read status: {str(e)}")
         return False
