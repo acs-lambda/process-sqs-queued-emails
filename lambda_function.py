@@ -66,8 +66,33 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     Returns the processed data or None if processing failed.
     """
     try:
+        logger.info(f"Processing record: {json.dumps(record)}")
         body = json.loads(record['body'])
-        mail = json.loads(body['Message'])['mail']
+        logger.info(f"Parsed body: {json.dumps(body)}")
+        
+        if not isinstance(body, dict):
+            logger.error(f"Expected body to be a dictionary, got {type(body)}")
+            return None
+            
+        if 'Message' not in body:
+            logger.error("No 'Message' key found in body")
+            return None
+            
+        message = json.loads(body['Message'])
+        logger.info(f"Parsed message: {json.dumps(message)}")
+        
+        if not isinstance(message, dict):
+            logger.error(f"Expected message to be a dictionary, got {type(message)}")
+            return None
+            
+        if 'mail' not in message:
+            logger.error("No 'mail' key found in message")
+            return None
+            
+        mail = message['mail']
+        if not isinstance(mail, dict):
+            logger.error(f"Expected mail to be a dictionary, got {type(mail)}")
+            return None
 
         source = mail['source']
         destination = mail['destination'][0]
@@ -135,6 +160,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
     Returns True if successful, False otherwise.
     """
     try:
+        logger.info(f"Storing email data: {data}")
         # Get sender name from user_info if available
         sender_name = data['user_info'].get('sender_name', '')
         
