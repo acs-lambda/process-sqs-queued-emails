@@ -7,12 +7,10 @@ import boto3
 import logging
 from typing import Dict, Any, Optional
 
-from config import BUCKET_NAME, QUEUE_URL, AWS_REGION
+from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
-from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email
+from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes
 from scheduling import generate_safe_schedule_name, schedule_email_processing
-from ev_calculator import calc_ev, parse_messages
-from llm_interface import generate_email_response
 
 # Set up logging
 logger = logging.getLogger()
@@ -47,29 +45,17 @@ def update_thread_with_attributes(conversation_id: str) -> None:
             
         attributes = json.loads(response_payload['body'])
         
-        # Update the thread with the attributes
-        threads_table = dynamodb.Table('Threads')
-        update_expr = "SET "
-        expr_attr_values = {}
-        expr_attr_names = {}
+        # Convert attribute names to lowercase with underscores
+        formatted_attributes = {
+            key.lower().replace(' ', '_'): value 
+            for key, value in attributes.items()
+        }
         
-        for i, (key, value) in enumerate(attributes.items()):
-            placeholder = f":val{i}"
-            name_placeholder = f"#attr{i}"
-            update_expr += f"{name_placeholder} = {placeholder}, "
-            expr_attr_values[placeholder] = value
-            expr_attr_names[name_placeholder] = key.lower().replace(' ', '_')
-        
-        # Remove trailing comma and space
-        update_expr = update_expr[:-2]
-        
-        threads_table.update_item(
-            Key={'conversation_id': conversation_id},
-            UpdateExpression=update_expr,
-            ExpressionAttributeValues=expr_attr_values,
-            ExpressionAttributeNames=expr_attr_names
-        )
-        
+        # Update the thread using db-select
+        if not update_thread_attributes(conversation_id, formatted_attributes):
+            logger.error(f"Failed to update thread attributes for conversation {conversation_id}")
+            return
+            
         logger.info(f"Successfully updated thread attributes for conversation {conversation_id}")
     except Exception as e:
         logger.error(f"Error updating thread attributes: {str(e)}")
@@ -142,76 +128,101 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         logger.error(f"Error processing email record: {str(e)}")
         return None
 
-def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
+def store_email_data(data: Dict[str, Any]) -> bool:
     """
-    Store email data in DynamoDB tables.
+    Store email data in DynamoDB tables using db-select.
     Returns True if successful, False otherwise.
     """
     try:
         # Get sender name from user_info if available
         sender_name = data['user_info'].get('sender_name', '')
         
-        # Store in Conversations table
-        conversations_table = dynamodb.Table('Conversations')
-        conversations_table.put_item(
-            Item={
-                'conversation_id': data['conv_id'],
-                'response_id': data['msg_id_hdr'],
-                'in_reply_to': data['in_reply_to'],
-                'timestamp': data['timestamp'],
-                'sender': data['source'],
-                'receiver': data['destination'],
-                'associated_account': data['account_id'],
-                'subject': data['subject'],
-                'body': data['text_body'],
-                's3_location': data['s3_key'],
-                'type': 'inbound-email',
-                'is_first_email': '1' if data['is_first'] else '0',
-                'ev_score': str(ev_score)
+        # Prepare conversation data
+        conversation_data = {
+            'conversation_id': data['conv_id'],
+            'response_id': data['msg_id_hdr'],
+            'in_reply_to': data['in_reply_to'],
+            'timestamp': data['timestamp'],
+            'sender': data['source'],
+            'receiver': data['destination'],
+            'associated_account': data['account_id'],
+            'subject': data['subject'],
+            'body': data['text_body'],
+            's3_location': data['s3_key'],
+            'type': 'inbound-email',
+            'is_first_email': '1' if data['is_first'] else '0'
+        }
+        
+        # Store in Conversations table using db-select
+        result = invoke_db_select(
+            table_name='Conversations',
+            index_name=None,  # Primary key query
+            key_name='conversation_id',
+            key_value={
+                'operation': 'put_item',
+                'item': conversation_data
             }
         )
+        
+        if not result or not result.get('success', False):
+            logger.error(f"Failed to store conversation data for {data['conv_id']}")
+            return False
 
-        threads_table = dynamodb.Table('Threads')
+        # Prepare thread data
+        thread_data = {
+            'conversation_id': data['conv_id'],
+            'source': data['source'],
+            'source_name': sender_name,
+            'associated_account': data['account_id'],
+            'read': False,
+            'lcp_enabled': True,
+            'lcp_flag_threshold': '80',
+            'flag': False  # Will be updated by generate-ev lambda
+        }
         
         # Check if thread exists
-        thread_response = threads_table.get_item(
-            Key={
-                'conversation_id': data['conv_id']
-            }
+        existing_thread = invoke_db_select(
+            table_name='Threads',
+            index_name=None,  # Primary key query
+            key_name='conversation_id',
+            key_value=data['conv_id']
         )
         
-        if data['is_first'] and 'Item' not in thread_response:
+        if data['is_first'] and not existing_thread:
             # Only create new thread if it's first email and thread doesn't exist
             logger.info(f"Creating new thread for conversation {data['conv_id']}")
-            threads_table.put_item(
-                Item={
-                    'conversation_id': data['conv_id'],
-                    'source': data['source'],
-                    'source_name': sender_name,
-                    'associated_account': data['account_id'],
-                    'read': False,
-                    'lcp_enabled': True,
-                    'lcp_flag_threshold': '80',
-                    'flag': ev_score >= 80
+            result = invoke_db_select(
+                table_name='Threads',
+                index_name=None,  # Primary key query
+                key_name='conversation_id',
+                key_value={
+                    'operation': 'put_item',
+                    'item': thread_data
                 }
             )
-        elif 'Item' in thread_response:
+            
+            if not result or not result.get('success', False):
+                logger.error(f"Failed to create thread for {data['conv_id']}")
+                return False
+                
+        elif existing_thread:
             # Update existing thread
             logger.info(f"Updating existing thread for conversation {data['conv_id']}")
-            threads_table.update_item(
-                Key={
-                    'conversation_id': data['conv_id']
-                },
-                UpdateExpression='SET #read = :read, #flag = :flag',
-                ExpressionAttributeNames={
-                    '#read': 'read',
-                    '#flag': 'flag'
-                },
-                ExpressionAttributeValues={
-                    ':read': False,
-                    ':flag': ev_score >= 80
+            result = invoke_db_select(
+                table_name='Threads',
+                index_name=None,  # Primary key query
+                key_name='conversation_id',
+                key_value={
+                    'operation': 'update_item',
+                    'update': {
+                        'read': False
+                    }
                 }
             )
+            
+            if not result or not result.get('success', False):
+                logger.error(f"Failed to update thread for {data['conv_id']}")
+                return False
         else:
             logger.warning(f"Thread not found for non-first email conversation {data['conv_id']}")
 
@@ -222,6 +233,68 @@ def store_email_data(data: Dict[str, Any], ev_score: int) -> bool:
     except Exception as e:
         logger.error(f"Error storing email data: {str(e)}")
         return False
+
+def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str) -> Optional[int]:
+    """
+    Invokes the generate-ev lambda to calculate and update EV score.
+    Returns the EV score if successful, None otherwise.
+    """
+    try:
+        response = lambda_client.invoke(
+            FunctionName=GENERATE_EV_LAMBDA_ARN,
+            InvocationType='RequestResponse',
+            Payload=json.dumps({
+                'conversation_id': conversation_id,
+                'message_id': message_id,
+                'account_id': account_id
+            })
+        )
+        
+        response_payload = json.loads(response['Payload'].read())
+        if response_payload['statusCode'] != 200:
+            logger.error(f"Failed to generate EV: {response_payload}")
+            return None
+            
+        result = json.loads(response_payload['body'])
+        if result['status'] != 'success':
+            logger.error(f"Generate EV failed: {result}")
+            return None
+            
+        return result['ev_score']
+    except Exception as e:
+        logger.error(f"Error invoking generate-ev lambda: {str(e)}")
+        return None
+
+def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: bool) -> Optional[str]:
+    """
+    Invokes the lcp-llm-response lambda to generate a response.
+    Returns the generated response if successful, None otherwise.
+    """
+    try:
+        response = lambda_client.invoke(
+            FunctionName=LCP_LLM_RESPONSE_LAMBDA_ARN,
+            InvocationType='RequestResponse',
+            Payload=json.dumps({
+                'conversation_id': conversation_id,
+                'account_id': account_id,
+                'is_first_email': is_first_email
+            })
+        )
+        
+        response_payload = json.loads(response['Payload'].read())
+        if response_payload['statusCode'] != 200:
+            logger.error(f"Failed to generate LLM response: {response_payload}")
+            return None
+            
+        result = json.loads(response_payload['body'])
+        if result['status'] != 'success':
+            logger.error(f"LLM response generation failed: {result}")
+            return None
+            
+        return result['response']
+    except Exception as e:
+        logger.error(f"Error invoking lcp-llm-response lambda: {str(e)}")
+        return None
 
 def lambda_handler(event, context):
     """
@@ -240,21 +313,22 @@ def lambda_handler(event, context):
                 if not email_data:
                     continue
 
-                # Calculate EV and generate response
-                chain = get_email_chain(email_data['conv_id'])
-                realtor_email = get_account_email(email_data['account_id'])
-                # If the just-processed email is not in the chain, add it for EV calculation
-                if not any(item.get('response_id') == email_data['msg_id_hdr'] for item in chain):
-                    chain.append({
-                        'subject': email_data['subject'],
-                        'body': email_data['text_body'],
-                        'sender': email_data['source'],
-                        'timestamp': email_data['timestamp'],
-                        'type': 'inbound-email',
-                        'response_id': email_data['msg_id_hdr']
-                    })
-                ev = calc_ev(parse_messages(realtor_email, chain))
-                logger.info(f"EV score calculated: {ev} for conversation {email_data['conv_id']} with chain length {len(chain)}")
+                # Store the email data
+                if not store_email_data(email_data):
+                    continue
+
+                # Calculate EV using the generate-ev lambda
+                ev = invoke_generate_ev(
+                    email_data['conv_id'],
+                    email_data['msg_id_hdr'],
+                    email_data['account_id']
+                )
+                
+                if ev is None:
+                    logger.error(f"Failed to calculate EV for conversation {email_data['conv_id']}")
+                    continue
+
+                logger.info(f"EV score calculated: {ev} for conversation {email_data['conv_id']}")
 
                 # Get thread information to check thresholds
                 threads_table = dynamodb.Table('Threads')
@@ -265,15 +339,11 @@ def lambda_handler(event, context):
                 )
                 
                 # Get threshold from thread or use default
-                threshold = 80  # Default threshold
+                threshold = 80
                 if 'Item' in thread_response:
                     # Convert Decimal to int if it exists
                     threshold = int(thread_response['Item'].get('lcp_flag_threshold', 80))
                 
-                # Store the email data with the EV score
-                if not store_email_data(email_data, ev):
-                    continue
-
                 # Check if we should generate and send response
                 should_generate_response = True
                 if not email_data['is_first']:
@@ -283,11 +353,16 @@ def lambda_handler(event, context):
                         logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
 
                 if should_generate_response:
-                    # Generate response
-                    response = generate_email_response(
-                        chain if not email_data['is_first'] else [{'subject': email_data['subject'], 'body': email_data['text_body']}],
-                        email_data['account_id']
+                    # Generate response using the lcp-llm-response lambda
+                    response = invoke_llm_response(
+                        email_data['conv_id'],
+                        email_data['account_id'],
+                        email_data['is_first']
                     )
+                    
+                    if response is None:
+                        logger.error(f"Failed to generate response for conversation {email_data['conv_id']}")
+                        continue
 
                     # Prepare and schedule the response
                     payload = {
@@ -325,7 +400,6 @@ def lambda_handler(event, context):
                 continue
 
         return {'statusCode': 200, 'body': 'Success'}
-
     except Exception as e:
         logger.error(f"Error in lambda handler: {str(e)}")
-        return {'statusCode': 500, 'body': f'Error: {str(e)}'}
+        return {'statusCode': 500, 'body': str(e)}
