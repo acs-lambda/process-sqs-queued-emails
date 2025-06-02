@@ -385,9 +385,9 @@ def lambda_handler(event, context):
 
                         # Prepare and schedule the response
                         payload = {
-                            'response_body': response,
-                            'account': email_data['account_id'],
-                            'target': email_data['source'],
+                            'body_text': response,
+                            'account_id': email_data['account_id'],
+                            'recipient': email_data['source'],
                             'in_reply_to': email_data['msg_id_hdr'],
                             'conversation_id': email_data['conv_id'],
                             'subject': email_data['subject'],
