@@ -291,6 +291,22 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.error(f"Error invoking lcp-llm-response lambda: {str(e)}")
         return None
 
+def update_thread_email_sending_status(conversation_id: str, is_sending: bool) -> bool:
+    """Update thread email sending status using direct DynamoDB access."""
+    try:
+        threads_table = dynamodb.Table('Threads')
+        threads_table.update_item(
+            Key={'conversation_id': conversation_id},
+            UpdateExpression='SET #sending = :sending',
+            ExpressionAttributeNames={'#sending': 'is_sending_email'},
+            ExpressionAttributeValues={':sending': str(is_sending).lower()}
+        )
+        logger.info(f"Successfully updated email sending status for conversation {conversation_id} to {is_sending}")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating thread email sending status: {str(e)}")
+        return False
+
 def lambda_handler(event, context):
     """
     Main lambda handler for processing SQS queued emails.
@@ -348,39 +364,51 @@ def lambda_handler(event, context):
                         logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
 
                 if should_generate_response:
-                    # Generate response using the lcp-llm-response lambda
-                    response = invoke_llm_response(
-                        email_data['conv_id'],
-                        email_data['account_id'],
-                        email_data['is_first']
-                    )
-                    
-                    if response is None:
-                        logger.error(f"Failed to generate response for conversation {email_data['conv_id']}")
+                    # Set email sending status to true before generating response
+                    if not update_thread_email_sending_status(email_data['conv_id'], True):
+                        logger.error(f"Failed to update email sending status for conversation {email_data['conv_id']}")
                         continue
 
-                    # Prepare and schedule the response
-                    payload = {
-                        'response_body': response,
-                        'account': email_data['account_id'],
-                        'target': email_data['source'],
-                        'in_reply_to': email_data['msg_id_hdr'],
-                        'conversation_id': email_data['conv_id'],
-                        'subject': email_data['subject'],
-                        'ev_score': ev
-                    }
+                    try:
+                        # Generate response using the lcp-llm-response lambda
+                        response = invoke_llm_response(
+                            email_data['conv_id'],
+                            email_data['account_id'],
+                            email_data['is_first']
+                        )
+                        
+                        if response is None:
+                            logger.error(f"Failed to generate response for conversation {email_data['conv_id']}")
+                            # Set email sending status back to false since we won't be sending
+                            update_thread_email_sending_status(email_data['conv_id'], False)
+                            continue
 
-                    schedule_name = generate_safe_schedule_name(
-                        f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
-                    )
-                    schedule_time = datetime.utcnow() + timedelta(seconds=10)
-                    
-                    schedule_email_processing(
-                        schedule_name,
-                        schedule_time,
-                        payload,
-                        email_data['in_reply_to']
-                    )
+                        # Prepare and schedule the response
+                        payload = {
+                            'response_body': response,
+                            'account': email_data['account_id'],
+                            'target': email_data['source'],
+                            'in_reply_to': email_data['msg_id_hdr'],
+                            'conversation_id': email_data['conv_id'],
+                            'subject': email_data['subject'],
+                            'ev_score': ev
+                        }
+
+                        schedule_name = generate_safe_schedule_name(
+                            f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
+                        )
+                        schedule_time = datetime.utcnow() + timedelta(seconds=10)
+                        
+                        schedule_email_processing(
+                            schedule_name,
+                            schedule_time,
+                            payload,
+                            email_data['in_reply_to']
+                        )
+                    except Exception as e:
+                        # Set email sending status back to false if anything fails
+                        update_thread_email_sending_status(email_data['conv_id'], False)
+                        raise e
                 else:
                     logger.info(f"Skipping response generation for conversation {email_data['conv_id']} as lcp_enabled is not 'true'")
 
