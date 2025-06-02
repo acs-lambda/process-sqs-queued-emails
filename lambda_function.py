@@ -374,7 +374,8 @@ def lambda_handler(event, context):
                         f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
                     )
                     schedule_time = datetime.utcnow() + timedelta(seconds=10)
-                    
+                    # Add an attribute 'busy' to the thread with a value of true
+                    update_thread_attributes(email_data['conv_id'], {'busy': True})
                     schedule_email_processing(
                         schedule_name,
                         schedule_time,
