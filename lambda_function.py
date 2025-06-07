@@ -291,6 +291,28 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.error(f"Error invoking lcp-llm-response lambda: {str(e)}")
         return None
 
+def get_user_lcp_automatic_enabled(account_id: str) -> bool:
+    """
+    Get the user's lcp_automatic_enabled status from the Users table.
+    Returns True if enabled, False otherwise.
+    """
+    try:
+        result = invoke_db_select(
+            table_name='Users',
+            index_name='id-index',
+            key_name='id',
+            key_value=account_id
+        )
+        
+        # Handle list response
+        logger.info(f"User lcp_automatic_enabled status: {result}")
+        if isinstance(result, list) and result:
+            return result[0].get('lcp_automatic_enabled', 'false') == 'true'
+        return False
+    except Exception as e:
+        logger.error(f"Error getting user lcp_automatic_enabled status: {str(e)}")
+        return False
+
 def lambda_handler(event, context):
     """
     Main lambda handler for processing SQS queued emails.
@@ -347,6 +369,12 @@ def lambda_handler(event, context):
                         should_generate_response = lcp_enabled == True
                         logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
 
+                # Check user's lcp_automatic_enabled status
+                if should_generate_response:
+                    user_lcp_enabled = get_user_lcp_automatic_enabled(email_data['account_id'])
+                    should_generate_response = user_lcp_enabled
+                    logger.info(f"User lcp_automatic_enabled value: {user_lcp_enabled}, will generate response: {should_generate_response}")
+
                 if should_generate_response:
                     # Generate response using the lcp-llm-response lambda
                     response = invoke_llm_response(
@@ -383,7 +411,7 @@ def lambda_handler(event, context):
                         email_data['in_reply_to']
                     )
                 else:
-                    logger.info(f"Skipping response generation for conversation {email_data['conv_id']} as lcp_enabled is not 'true'")
+                    logger.info(f"Skipping response generation for conversation {email_data['conv_id']} as lcp_automatic_enabled is not 'true'")
 
                 # Only delete from SQS after successful processing
                 sqs.delete_message(
