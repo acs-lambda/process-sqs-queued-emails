@@ -287,7 +287,10 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
             return None
             
         result = json.loads(response_payload['body'])
-        if result['status'] != 'success':
+        if result['status'] == 'flagged_for_review':
+            logger.info(f"Conversation {conversation_id} flagged for review - no email will be sent")
+            return None
+        elif result['status'] != 'success':
             logger.error(f"LLM response generation failed: {result}")
             return None
             
@@ -388,8 +391,9 @@ def lambda_handler(event, context):
                         email_data['is_first']
                     )
                     
+                    # If response is None, it means the conversation was flagged for review
                     if response is None:
-                        logger.error(f"Failed to generate response for conversation {email_data['conv_id']}")
+                        logger.info(f"Skipping email scheduling for conversation {email_data['conv_id']} as it was flagged for review")
                         continue
 
                     # Prepare and schedule the response
