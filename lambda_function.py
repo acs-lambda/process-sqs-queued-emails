@@ -194,7 +194,8 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             'read': False,
             'lcp_enabled': True,
             'lcp_flag_threshold': '80',
-            'flag': False  # Will be updated by generate-ev lambda
+            'flag': False,  # Will be updated by generate-ev lambda
+            'flag_for_review': False  # Initialize flag_for_review as false
         }
         
         # Check if thread exists using db-select
@@ -334,7 +335,7 @@ def lambda_handler(event, context):
                 if not store_email_data(email_data):
                     continue
 
-                # Calculate EV using the generate-ev lambda
+                # Calculate EV using the generate-ev lambda - this happens regardless of LCP settings
                 ev = invoke_generate_ev(
                     email_data['conv_id'],
                     email_data['msg_id_hdr'],
