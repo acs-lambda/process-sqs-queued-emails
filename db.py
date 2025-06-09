@@ -110,6 +110,21 @@ def get_account_email(account_id: str) -> Optional[str]:
         return result[0].get('responseEmail')
     return None
 
+def get_user_lcp_automatic_enabled(account_id: str) -> bool:
+    """Get lcp_automatic_enabled status for a user by account ID."""
+    result = invoke_db_select(
+        table_name='Users',
+        index_name='id-index',  # Primary key query
+        key_name='id',
+        key_value=account_id
+    )
+    
+    # Handle list response
+    if isinstance(result, list) and result:
+        lcp_automatic_enabled = result[0].get('lcp_automatic_enabled', 'false')
+        return lcp_automatic_enabled.lower() == 'true'
+    return False
+
 def update_thread_attributes(conversation_id: str, attributes: Dict[str, Any]) -> bool:
     """Update thread with new attributes using direct DynamoDB access."""
     try:

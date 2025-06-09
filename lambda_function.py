@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 
 from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
-from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item, invoke_db_select
+from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item, invoke_db_select, get_user_lcp_automatic_enabled
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 
 # Set up logging
@@ -185,19 +185,6 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             logger.error(f"Failed to store conversation data for {data['conv_id']}")
             return False
 
-        # Prepare thread data
-        thread_data = {
-            'conversation_id': data['conv_id'],
-            'source': data['source'],
-            'source_name': sender_name,
-            'associated_account': data['account_id'],
-            'read': False,
-            'lcp_enabled': True,
-            'lcp_flag_threshold': '80',
-            'flag': False,  # Will be updated by generate-ev lambda
-            'flag_for_review': False  # Initialize flag_for_review as false
-        }
-        
         # Check if thread exists using db-select
         existing_thread = invoke_db_select(
             table_name='Threads',
@@ -207,8 +194,25 @@ def store_email_data(data: Dict[str, Any]) -> bool:
         )
         
         if data['is_first'] and not existing_thread:
+            # Get user's lcp_automatic_enabled status
+            lcp_enabled = get_user_lcp_automatic_enabled(data['account_id'])
+            logger.info(f"User lcp_automatic_enabled status: {lcp_enabled} for account {data['account_id']}")
+            
+            # Prepare thread data
+            thread_data = {
+                'conversation_id': data['conv_id'],
+                'source': data['source'],
+                'source_name': sender_name,
+                'associated_account': data['account_id'],
+                'read': False,
+                'lcp_enabled': lcp_enabled,
+                'lcp_flag_threshold': '80',
+                'flag': False,  # Will be updated by generate-ev lambda
+                'flag_for_review': False  # Initialize flag_for_review as false
+            }
+            
             # Only create new thread if it's first email and thread doesn't exist
-            logger.info(f"Creating new thread for conversation {data['conv_id']}")
+            logger.info(f"Creating new thread for conversation {data['conv_id']} with lcp_enabled={lcp_enabled}")
             if not store_thread_item(thread_data):
                 logger.error(f"Failed to create thread for {data['conv_id']}")
                 return False
