@@ -204,11 +204,12 @@ def store_email_data(data: Dict[str, Any]) -> bool:
                 'source': data['source'],
                 'source_name': sender_name,
                 'associated_account': data['account_id'],
-                'read': False,
+                'read': 'false',
                 'lcp_enabled': lcp_enabled,
                 'lcp_flag_threshold': '80',
-                'flag': False,  # Will be updated by generate-ev lambda
-                'flag_for_review': False  # Initialize flag_for_review as false
+                'flag': 'false',  # Will be updated by generate-ev lambda
+                'flag_for_review': 'false',  # Initialize flag_for_review as false
+                'flag_review_override': 'false'  # Initialize flag_review_override as false
             }
             
             # Only create new thread if it's first email and thread doesn't exist
@@ -374,7 +375,7 @@ def lambda_handler(event, context):
                 if not email_data['is_first']:
                     if 'Item' in thread_response:
                         lcp_enabled = thread_response['Item'].get('lcp_enabled', 'false')
-                        should_generate_response = lcp_enabled == True
+                        should_generate_response = lcp_enabled == 'true'
                         logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
 
                 # Check user's lcp_automatic_enabled status
