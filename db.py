@@ -171,6 +171,10 @@ def store_conversation_item(item: Dict[str, Any]) -> bool:
 def store_thread_item(item: Dict[str, Any]) -> bool:
     """Store a thread item using direct DynamoDB access."""
     try:
+        # Ensure context_notes is included as empty string if not provided
+        if 'context_notes' not in item:
+            item['context_notes'] = ''
+            
         threads_table = dynamodb.Table('Threads')
         threads_table.put_item(Item=item)
         return True

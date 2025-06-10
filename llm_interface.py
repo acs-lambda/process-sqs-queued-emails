@@ -2,6 +2,7 @@ import json
 import requests
 import boto3
 import logging
+from db import invoke_db_select
 
 # Set up logging
 logger = logging.getLogger()
@@ -13,7 +14,17 @@ url = "https://api.together.xyz/v1/chat/completions"
 dynamodb = boto3.client('dynamodb')
 dynamodb_resource = boto3.resource('dynamodb')
 
-realtor_role = {"role": "system", "content": "You are a real estate agent. Respond as if you are trying to follow up to this potential client. This email was auto-generated and a personalized response to follow up with the user should be sent based on the contents given to you. Remember to respond as the agent and not the client. You are answering whatever questions the client asks."}
+realtor_role = {
+    "role": "system", 
+    "content": """You are a professional real estate agent. Your task is to write personalized, concise email responses to potential clients. Follow these strict guidelines:
+1. Write ONLY the email body content - no subject, no signature, no closing phrases
+2. Never repeat content or questions
+3. Never use placeholder values (like X, Y, Z) - use actual information provided
+4. Keep responses clear, professional, and focused on gathering necessary information
+5. Structure the email with a greeting, main content, and a simple closing
+6. Do not include any contact information or signatures
+7. Do not include 'Best regards' or similar closings"""
+}
 
 def send_message_to_llm(messages):
     """
@@ -63,12 +74,35 @@ def get_template_to_use(uid, email_type):
                 return response['content']
         return ""
 
-def format_conversation_for_llm(email_chain):
+def get_thread_context_notes(conversation_id: str) -> str:
+    """Get context notes for a thread."""
+    result = invoke_db_select(
+        table_name='Threads',
+        index_name=None,  # Primary key query
+        key_name='conversation_id',
+        key_value=conversation_id
+    )
+    
+    if isinstance(result, list) and result:
+        return result[0].get('context_notes', '')
+    return ''
+
+def format_conversation_for_llm(email_chain, conversation_id: str = None):
     """
     Formats the email chain to be compatible with the LLM input structure.
     Includes both subject and body for each email.
+    Optionally includes context notes if available.
     """
     formatted_messages = [realtor_role]
+    
+    # Add context notes if available
+    if conversation_id:
+        context_notes = get_thread_context_notes(conversation_id)
+        if context_notes:
+            formatted_messages.append({
+                "role": "system",
+                "content": f"Additional context for this conversation: {context_notes}"
+            })
     
     logger.info(f"Formatting conversation for LLM. Chain length: {len(email_chain)}")
     for i, email in enumerate(email_chain):
@@ -84,16 +118,7 @@ def format_conversation_for_llm(email_chain):
     
     return formatted_messages
 
-
-def send_introductory_email(starting_msg, uid):
-    # template = get_template_to_use(uid)
-    return send_message_to_llm([
-        realtor_role,
-        {"role": "system", "content": "ONLY output the body of the email reply. Do NOT include the subject, signature, closing, sender name, or any extra text. Only the main message body as you would write it in the email editor."},
-        {"role": "user", "content": "Subject: " +starting_msg['subject'] +"\n\nBody:" + starting_msg['body']}
-    ])
-
-def generate_email_response(emails, uid):
+def generate_email_response(emails, uid, conversation_id: str = None):
     """
     Generates an email response based on the email chain.
     Handles both first-time and subsequent emails consistently.
@@ -111,7 +136,7 @@ def generate_email_response(emails, uid):
             logger.info(f"  Type: {email.get('type', 'unknown')}")
 
         # Format the conversation for the LLM
-        formatted_messages = format_conversation_for_llm(emails)
+        formatted_messages = format_conversation_for_llm(emails, conversation_id)
         
         # Add the system message for consistent formatting
         formatted_messages.append({
@@ -128,3 +153,37 @@ def generate_email_response(emails, uid):
     except Exception as e:
         logger.error(f"Error generating email response: {str(e)}")
         raise
+
+def send_introductory_email(starting_msg, uid, conversation_id: str = None):
+    messages = [
+        realtor_role,
+        {"role": "system", "content": """IMPORTANT OUTPUT RULES:
+1. Output ONLY the email body content
+2. Do not include subject line, signature, or contact information
+3. Do not repeat any content
+4. Do not use placeholder values
+5. Keep the response concise and professional
+6. End with a simple closing like 'Looking forward to hearing from you'
+7. Do not include 'Best regards' or similar formal closings"""}
+    ]
+    
+    # Add context notes if available
+    if conversation_id:
+        context_notes = get_thread_context_notes(conversation_id)
+        if context_notes:
+            messages.insert(1, {
+                "role": "system",
+                "content": f"Additional context for this conversation: {context_notes}"
+            })
+    
+    # Format the input message clearly
+    input_content = f"Subject: {starting_msg['subject']}\n\nBody: {starting_msg['body']}"
+    messages.append({"role": "user", "content": input_content})
+    
+    # Add a final system message to reinforce output format
+    messages.append({
+        "role": "system",
+        "content": "Remember: Output ONLY the email body content. No subject, no signature, no formal closings."
+    })
+    
+    return send_message_to_llm(messages)
