@@ -372,6 +372,24 @@ def lambda_handler(event, context):
                     else:
                         logger.error(f"Failed to store spam email for conversation {email_data['conv_id']}")
                     
+                    # Also create a thread entry for the spam conversation
+                    threads_table = dynamodb.Table('Threads')
+                    thread_item = {
+                        'conversation_id': email_data['conv_id'],
+                        'source': email_data['source'],
+                        'source_name': email_data['user_info'].get('sender_name', ''),  # Include sender name from user_info
+                        'associated_account': email_data['account_id'],
+                        'read': 'false',
+                        'lcp_enabled': 'false',  # Disable LCP for spam
+                        'lcp_flag_threshold': '80',
+                        'flag': 'false',
+                        'flag_for_review': 'false',
+                        'flag_review_override': 'false',
+                        'spam': 'true',  # Mark as spam in thread
+                        'ttl': int(datetime.utcnow().timestamp()) + SPAM_TTL_DAYS * 24 * 60 * 60  # Same TTL as conversation
+                    }
+                    threads_table.put_item(Item=thread_item)
+                    
                     # Delete from SQS since we've processed it (even though it's spam)
                     sqs.delete_message(
                         QueueUrl=QUEUE_URL,
