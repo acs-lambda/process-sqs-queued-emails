@@ -180,6 +180,11 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             'type': 'inbound-email',
             'is_first_email': '1' if data['is_first'] else '0'
         }
+
+        # Add llm_email_type if this is an LLM-generated email
+        if data.get('llm_email_type'):
+            conversation_data['llm_email_type'] = data['llm_email_type']
+            conversation_data['type'] = 'llm-response'  # Override type for LLM responses
         
         # Store in Conversations table using direct DynamoDB access
         if not store_conversation_item(conversation_data):
@@ -269,36 +274,64 @@ def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str) -
 
 def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: bool) -> Optional[str]:
     """
-    Invokes the lcp-llm-response lambda to generate a response.
-    Returns the generated response if successful, None otherwise.
+    Invokes the LLM response Lambda to generate a response.
+    Returns the message ID if successful, None otherwise.
     """
     try:
+        # First, try to select a scenario using the selector LLM
+        scenario = select_scenario_with_llm(get_email_chain(conversation_id), conversation_id)
+        logger.info(f"Selected scenario for conversation {conversation_id}: {scenario}")
+
+        # Invoke LLM response Lambda
         response = lambda_client.invoke(
             FunctionName=LCP_LLM_RESPONSE_LAMBDA_ARN,
             InvocationType='RequestResponse',
             Payload=json.dumps({
                 'conversation_id': conversation_id,
                 'account_id': account_id,
-                'is_first_email': is_first_email
+                'is_first_email': is_first_email,
+                'scenario': scenario
             })
         )
         
         response_payload = json.loads(response['Payload'].read())
         if response_payload['statusCode'] != 200:
-            logger.error(f"Failed to generate LLM response: {response_payload}")
+            logger.error(f"LLM response Lambda failed: {response_payload}")
             return None
             
         result = json.loads(response_payload['body'])
-        if result['status'] == 'flagged_for_review':
-            logger.info(f"Conversation {conversation_id} flagged for review - no email will be sent")
-            return None
-        elif result['status'] != 'success':
+        if result['status'] != 'success':
             logger.error(f"LLM response generation failed: {result}")
             return None
+
+        # Store the LLM response in Conversations table
+        llm_response = result['response']
+        llm_email_type = result.get('llm_email_type', 'continuation_email')  # Default to continuation_email if not specified
+        
+        # Generate a unique message ID for the response
+        message_id = str(uuid.uuid4())
+        
+        # Store the response
+        conversation_data = {
+            'conversation_id': conversation_id,
+            'response_id': message_id,
+            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'sender': get_account_email(account_id),
+            'receiver': None,  # Will be set when sending the email
+            'associated_account': account_id,
+            'subject': None,  # Will be set when sending the email
+            'body': llm_response,
+            'type': 'llm-response',
+            'llm_email_type': llm_email_type
+        }
+        
+        if not store_conversation_item(conversation_data):
+            logger.error(f"Failed to store LLM response for conversation {conversation_id}")
+            return None
             
-        return result['response']
+        return message_id
     except Exception as e:
-        logger.error(f"Error invoking lcp-llm-response lambda: {str(e)}")
+        logger.error(f"Error invoking LLM response Lambda: {str(e)}")
         return None
 
 def get_user_lcp_automatic_enabled(account_id: str) -> bool:
