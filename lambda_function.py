@@ -7,10 +7,11 @@ import boto3
 import logging
 from typing import Dict, Any, Optional
 
-from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN
+from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN, SPAM_TTL_DAYS
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
-from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item, invoke_db_select, get_user_lcp_automatic_enabled
+from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item, invoke_db_select, get_user_lcp_automatic_enabled, store_spam_conversation_item
 from scheduling import generate_safe_schedule_name, schedule_email_processing
+from llm_interface import detect_spam
 
 # Set up logging
 logger = logging.getLogger()
@@ -339,7 +340,48 @@ def lambda_handler(event, context):
                 if not email_data:
                     continue
 
-                # Store the email data
+                # Check if the email is spam using LLM
+                is_spam = detect_spam(
+                    subject=email_data['subject'],
+                    body=email_data['text_body'],
+                    sender=email_data['source']
+                )
+                
+                if is_spam:
+                    logger.info(f"Email from {email_data['source']} classified as spam. Storing with TTL and ending workflow.")
+                    
+                    # Prepare spam conversation data
+                    spam_conversation_data = {
+                        'conversation_id': email_data['conv_id'],
+                        'response_id': email_data['msg_id_hdr'],
+                        'in_reply_to': email_data['in_reply_to'],
+                        'timestamp': email_data['timestamp'],
+                        'sender': email_data['source'],
+                        'receiver': email_data['destination'],
+                        'associated_account': email_data['account_id'],
+                        'subject': email_data['subject'],
+                        'body': email_data['text_body'],
+                        's3_location': email_data['s3_key'],
+                        'type': 'inbound-email',
+                        'is_first_email': '1' if email_data['is_first'] else '0'
+                    }
+                    
+                    # Store spam conversation with TTL
+                    if store_spam_conversation_item(spam_conversation_data, SPAM_TTL_DAYS):
+                        logger.info(f"Successfully stored spam email with {SPAM_TTL_DAYS}-day TTL")
+                    else:
+                        logger.error(f"Failed to store spam email for conversation {email_data['conv_id']}")
+                    
+                    # Delete from SQS since we've processed it (even though it's spam)
+                    sqs.delete_message(
+                        QueueUrl=QUEUE_URL,
+                        ReceiptHandle=record['receiptHandle']
+                    )
+                    
+                    # Skip the rest of the workflow for spam emails
+                    continue
+
+                # Store the email data (non-spam emails only)
                 if not store_email_data(email_data):
                     continue
 

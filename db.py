@@ -4,6 +4,7 @@ import boto3
 import logging
 from typing import Dict, Any, Optional, List
 from config import AWS_REGION, DB_SELECT_LAMBDA
+from datetime import datetime, timedelta
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -166,6 +167,26 @@ def store_conversation_item(item: Dict[str, Any]) -> bool:
         return True
     except Exception as e:
         logger.error(f"Error storing conversation item: {str(e)}")
+        return False
+
+def store_spam_conversation_item(item: Dict[str, Any], ttl_days: int = 30) -> bool:
+    """Store a spam conversation item with TTL using direct DynamoDB access."""
+    try:
+        # Add spam flag and TTL to the item
+        spam_item = item.copy()
+        spam_item['spam'] = 'true'
+        
+        # Calculate TTL (Unix timestamp for DynamoDB TTL)
+        ttl_timestamp = int((datetime.utcnow() + timedelta(days=ttl_days)).timestamp())
+        spam_item['ttl'] = ttl_timestamp
+        
+        conversations_table = dynamodb.Table('Conversations')
+        conversations_table.put_item(Item=spam_item)
+        
+        logger.info(f"Stored spam conversation with {ttl_days}-day TTL (expires at timestamp: {ttl_timestamp})")
+        return True
+    except Exception as e:
+        logger.error(f"Error storing spam conversation item: {str(e)}")
         return False
 
 def store_thread_item(item: Dict[str, Any]) -> bool:
