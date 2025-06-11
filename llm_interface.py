@@ -113,6 +113,7 @@ Body: {body}
         
         # Store the invocation record with actual token counts
         invocation_success = store_ai_invocation(
+            
             associated_account=account_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

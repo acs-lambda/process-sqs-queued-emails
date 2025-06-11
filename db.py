@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from config import AWS_REGION, DB_SELECT_LAMBDA
 from datetime import datetime, timedelta
+import uuid
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -253,11 +254,11 @@ def store_ai_invocation(
         invocations_table = dynamodb.Table('Invocations')
         
         # Generate a unique invocation ID
-        invocation_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{associated_account}"
+        invocation_id = str(uuid.uuid4())
         
         # Prepare the invocation record
         invocation_data = {
-            'invocation_id': invocation_id,
+            'id': invocation_id,
             'associated_account': associated_account,
             'input_tokens': input_tokens,
             'output_tokens': output_tokens,
