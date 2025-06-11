@@ -44,6 +44,10 @@ def detect_spam(subject: str, body: str, sender: str, account_id: str) -> bool:
     Returns True if the email is spam, False otherwise.
     """
     try:
+        logger.info(f"Starting spam detection for email from {sender} to account {account_id}")
+        logger.info(f"Email subject: {subject}")
+        logger.info(f"Email body length: {len(body)} characters")
+        
         # Prepare the email content for spam detection
         email_content = f"""
 Subject: {subject}
@@ -58,6 +62,10 @@ Body: {body}
                 "content": email_content
             }
         ]
+        
+        logger.info("Prepared messages for spam detection:")
+        logger.info(f"System prompt length: {len(spam_detection_role['content'])} characters")
+        logger.info(f"User message length: {len(email_content)} characters")
         
         # Use the LLM API to detect spam
         headers = {
@@ -77,40 +85,48 @@ Body: {body}
             "stream": False
         }
         
-        logger.info(f"Checking spam for email from {sender} with subject: {subject}")
+        logger.info("Sending request to Together AI API for spam detection")
+        logger.info(f"Request payload: {json.dumps(payload, indent=2)}")
+        
         response = requests.post(url, headers=headers, json=payload)
+        logger.info(f"API response status code: {response.status_code}")
+        
         response_data = response.json()
+        logger.info("Raw API response data:")
+        logger.info(json.dumps(response_data, indent=2))
 
         if response.status_code != 200 or "choices" not in response_data:
             logger.error(f"Spam detection API call failed: {response_data}")
             # In case of API failure, assume not spam to avoid false positives
             return False
 
-        logger.info("Raw response data: %s", response_data)
-
         response_text = response_data["choices"][0]["message"]["content"].strip().lower()
-        logger.info(f"Spam detection response: {response_text}")
+        logger.info(f"Spam detection response text: '{response_text}'")
         
-        # Get token usage from the API response
+        # Get token usage from response
         usage = response_data.get("usage", {})
         input_tokens = usage.get("prompt_tokens", 0)
         output_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", 0)
+        
+        logger.info(f"Token usage - Input: {input_tokens}, Output: {output_tokens}, Total: {total_tokens}")
         
         # Store the invocation record with actual token counts
-        store_ai_invocation(
+        invocation_success = store_ai_invocation(
             associated_account=account_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             llm_email_type="spam_detection"
         )
+        logger.info(f"Stored invocation record: {'Success' if invocation_success else 'Failed'}")
         
         # Check if the response contains "spam"
         is_spam = "spam" in response_text and "not spam" not in response_text
-        logger.info(f"Email classified as spam: {is_spam}")
+        logger.info(f"Final spam classification: {is_spam}")
         
         return is_spam
         
     except Exception as e:
-        logger.error(f"Error in spam detection: {str(e)}")
+        logger.error(f"Error in spam detection: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         # In case of error, assume not spam to avoid false positives
         return False

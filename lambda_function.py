@@ -278,31 +278,44 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
     Returns the message ID if successful, None otherwise.
     """
     try:
+        logger.info(f"Starting LLM response generation for conversation {conversation_id}")
+        logger.info(f"Account ID: {account_id}, Is First Email: {is_first_email}")
+
         # Invoke LLM response Lambda
+        payload = {
+            'conversation_id': conversation_id,
+            'account_id': account_id,
+            'is_first_email': is_first_email,
+            'scenario': None
+        }
+        logger.info(f"Sending request to LLM response Lambda with payload: {json.dumps(payload, indent=2)}")
+        
         response = lambda_client.invoke(
             FunctionName=LCP_LLM_RESPONSE_LAMBDA_ARN,
             InvocationType='RequestResponse',
-            Payload=json.dumps({
-                'conversation_id': conversation_id,
-                'account_id': account_id,
-                'is_first_email': is_first_email,
-                'scenario': None
-            })
+            Payload=json.dumps(payload)
         )
         
+        logger.info(f"Received response from LLM response Lambda")
         response_payload = json.loads(response['Payload'].read())
+        logger.info(f"Response payload: {json.dumps(response_payload, indent=2)}")
+        
         if response_payload['statusCode'] != 200:
-            logger.error(f"LLM response Lambda failed: {response_payload}")
+            logger.error(f"LLM response Lambda failed with status {response_payload['statusCode']}")
             return None
             
         result = json.loads(response_payload['body'])
+        logger.info(f"Parsed response body: {json.dumps(result, indent=2)}")
+        
         if result['status'] != 'success':
             logger.error(f"LLM response generation failed: {result}")
             return None
 
         # Store invocation record for LLM response generation
         usage = result.get('usage', {})
-        store_ai_invocation(
+        logger.info(f"Token usage from LLM response: {json.dumps(usage, indent=2)}")
+        
+        invocation_success = store_ai_invocation(
             associated_account=account_id,
             input_tokens=usage.get('prompt_tokens', 0),
             output_tokens=usage.get('completion_tokens', 0),
@@ -310,13 +323,18 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
             conversation_id=conversation_id,
             model_name=result.get('model_name', 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8')
         )
+        logger.info(f"Stored invocation record: {'Success' if invocation_success else 'Failed'}")
 
         # Store the LLM response in Conversations table
         llm_response = result['response']
         llm_email_type = result.get('llm_email_type', 'continuation_email')  # Default to continuation_email if not specified
         
+        logger.info(f"Generated response length: {len(llm_response)} characters")
+        logger.info(f"LLM email type: {llm_email_type}")
+        
         # Generate a unique message ID for the response
         message_id = str(uuid.uuid4())
+        logger.info(f"Generated message ID: {message_id}")
         
         # Store the response
         conversation_data = {
@@ -332,13 +350,15 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
             'llm_email_type': llm_email_type
         }
         
+        logger.info("Storing conversation data in DynamoDB")
         if not store_conversation_item(conversation_data):
             logger.error(f"Failed to store LLM response for conversation {conversation_id}")
             return None
             
+        logger.info(f"Successfully stored LLM response with message ID {message_id}")
         return message_id
     except Exception as e:
-        logger.error(f"Error invoking LLM response Lambda: {str(e)}")
+        logger.error(f"Error invoking LLM response Lambda: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         return None
 
 def get_user_lcp_automatic_enabled(account_id: str) -> bool:
