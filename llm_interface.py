@@ -74,7 +74,7 @@ Body: {body}
         }
 
         payload = {
-            "model": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+            "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
             "messages": messages,
             "max_tokens": 10,  # We only need "spam" or "not spam"
             "temperature": 0.1,  # Low temperature for consistent classification
