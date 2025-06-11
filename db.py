@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from config import AWS_REGION, DB_SELECT_LAMBDA
 from datetime import datetime, timedelta
 import uuid
+import time
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -263,7 +264,7 @@ def store_ai_invocation(
             'input_tokens': input_tokens,
             'output_tokens': output_tokens,
             'model_name': model_name,
-            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+            'timestamp': int(time.time() * 1000)
         }
         
         # Add optional fields if provided
