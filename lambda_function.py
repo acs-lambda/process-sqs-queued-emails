@@ -278,10 +278,6 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
     Returns the message ID if successful, None otherwise.
     """
     try:
-        # First, try to select a scenario using the selector LLM
-        scenario = select_scenario_with_llm(get_email_chain(conversation_id), conversation_id)
-        logger.info(f"Selected scenario for conversation {conversation_id}: {scenario}")
-
         # Invoke LLM response Lambda
         response = lambda_client.invoke(
             FunctionName=LCP_LLM_RESPONSE_LAMBDA_ARN,
@@ -290,7 +286,7 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
                 'conversation_id': conversation_id,
                 'account_id': account_id,
                 'is_first_email': is_first_email,
-                'scenario': scenario
+                'scenario': None
             })
         )
         
@@ -303,6 +299,17 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         if result['status'] != 'success':
             logger.error(f"LLM response generation failed: {result}")
             return None
+
+        # Store invocation record for LLM response generation
+        usage = result.get('usage', {})
+        store_ai_invocation(
+            associated_account=account_id,
+            input_tokens=usage.get('prompt_tokens', 0),
+            output_tokens=usage.get('completion_tokens', 0),
+            llm_email_type=result.get('llm_email_type', 'continuation_email'),
+            conversation_id=conversation_id,
+            model_name=result.get('model_name', 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8')
+        )
 
         # Store the LLM response in Conversations table
         llm_response = result['response']
@@ -377,7 +384,8 @@ def lambda_handler(event, context):
                 is_spam = detect_spam(
                     subject=email_data['subject'],
                     body=email_data['text_body'],
-                    sender=email_data['source']
+                    sender=email_data['source'],
+                    account_id=email_data['account_id']
                 )
                 
                 if is_spam:

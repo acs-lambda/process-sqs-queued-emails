@@ -236,3 +236,46 @@ def update_thread_read_status(conversation_id: str, read_status: bool) -> bool:
     except Exception as e:
         logger.error(f"Error updating thread read status: {str(e)}")
         return False
+
+def store_ai_invocation(
+    associated_account: str,
+    input_tokens: int,
+    output_tokens: int,
+    llm_email_type: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    model_name: str = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+) -> bool:
+    """
+    Store an AI invocation record in the Invocations table.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        invocations_table = dynamodb.Table('Invocations')
+        
+        # Generate a unique invocation ID
+        invocation_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{associated_account}"
+        
+        # Prepare the invocation record
+        invocation_data = {
+            'invocation_id': invocation_id,
+            'associated_account': associated_account,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'model_name': model_name,
+            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        }
+        
+        # Add optional fields if provided
+        if llm_email_type:
+            invocation_data['llm_email_type'] = llm_email_type
+        if conversation_id:
+            invocation_data['conversation_id'] = conversation_id
+            
+        # Store in Invocations table
+        invocations_table.put_item(Item=invocation_data)
+        logger.info(f"Stored AI invocation record for account {associated_account}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error storing AI invocation record: {str(e)}")
+        return False

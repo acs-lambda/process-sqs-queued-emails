@@ -2,6 +2,7 @@ import json
 import requests
 import boto3
 import logging
+from db import store_ai_invocation
 
 # Set up logging
 logger = logging.getLogger()
@@ -37,7 +38,7 @@ CLASSIFY AS NOT SPAM if the email is:
 Respond with ONLY the word "spam" or "not spam" - nothing else."""
 }
 
-def detect_spam(subject: str, body: str, sender: str) -> bool:
+def detect_spam(subject: str, body: str, sender: str, account_id: str) -> bool:
     """
     Uses LLM to detect if an email is spam (not related to real estate conversations).
     Returns True if the email is spam, False otherwise.
@@ -85,8 +86,23 @@ Body: {body}
             # In case of API failure, assume not spam to avoid false positives
             return False
 
+        logger.info("Raw response data: %s", response_data)
+
         response_text = response_data["choices"][0]["message"]["content"].strip().lower()
         logger.info(f"Spam detection response: {response_text}")
+        
+        # Get token usage from the API response
+        usage = response_data.get("usage", {})
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+        
+        # Store the invocation record with actual token counts
+        store_ai_invocation(
+            associated_account=account_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            llm_email_type="spam_detection"
+        )
         
         # Check if the response contains "spam"
         is_spam = "spam" in response_text and "not spam" not in response_text
