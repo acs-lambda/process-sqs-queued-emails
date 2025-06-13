@@ -233,7 +233,6 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             index_name='conversation_id-index',  # Primary key query
             key_name='conversation_id',
             key_value=data['conv_id'],
-            account_id=data['account_id']
         )
         
         if data['is_first'] and not existing_thread:
@@ -432,7 +431,6 @@ def get_user_lcp_automatic_enabled(account_id: str) -> bool:
             index_name='id-index',
             key_name='id',
             key_value=account_id,
-            account_id=account_id  # Added missing account_id parameter
         )
         
         # Handle list response
