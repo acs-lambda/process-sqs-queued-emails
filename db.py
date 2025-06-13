@@ -27,21 +27,46 @@ def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, 
             'key_value': key_value
         }
         
+        logger.info(f"Invoking database Lambda with payload: {json.dumps(payload)}")
+        
         response = lambda_client.invoke(
             FunctionName=DB_SELECT_LAMBDA,
             InvocationType='RequestResponse',
             Payload=json.dumps(payload)
         )
         
+        # Read and parse the response payload
         response_payload = json.loads(response['Payload'].read())
-        if response_payload['statusCode'] != 200:
-            logger.error(f"Database Lambda failed: {response_payload}")
-            return None
+        logger.info(f"Raw database Lambda response: {json.dumps(response_payload)}")
         
-        logger.info(f"Database Lambda response: {response_payload}")
-        return json.loads(response_payload['body'])
+        # Check if response has the expected structure
+        if not isinstance(response_payload, dict):
+            logger.error(f"Database Lambda response is not a dictionary: {type(response_payload)}")
+            return None
+            
+        if 'statusCode' not in response_payload:
+            logger.error(f"Database Lambda response missing statusCode: {response_payload}")
+            return None
+            
+        if response_payload['statusCode'] != 200:
+            logger.error(f"Database Lambda failed with status {response_payload['statusCode']}: {response_payload}")
+            return None
+            
+        if 'body' not in response_payload:
+            logger.error(f"Database Lambda response missing body: {response_payload}")
+            return None
+            
+        try:
+            # Parse the body which should be a JSON string
+            body_data = json.loads(response_payload['body'])
+            logger.info(f"Parsed database Lambda response body: {json.dumps(body_data)}")
+            return body_data
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse database Lambda response body as JSON: {str(e)}")
+            return None
+            
     except Exception as e:
-        logger.error(f"Error invoking database Lambda: {str(e)}")
+        logger.error(f"Error invoking database Lambda: {str(e)}", exc_info=True)
         return None
 
 def get_conversation_id(message_id: str) -> Optional[str]:
@@ -281,3 +306,103 @@ def store_ai_invocation(
     except Exception as e:
         logger.error(f"Error storing AI invocation record: {str(e)}")
         return False
+
+def get_rate_limit(associated_account: str, table_name: str) -> int:
+    """
+    Get the current invocation count for an account from the rate limit table.
+    Returns 0 if no record exists.
+    """
+    try:
+        table = dynamodb.Table(table_name)
+        response = table.query(
+            IndexName='associated_account-index',
+            KeyConditionExpression='associated_account = :acc',
+            ExpressionAttributeValues={':acc': associated_account}
+        )
+        
+        if response['Items']:
+            # Check if the record has expired (TTL)
+            item = response['Items'][0]
+            if 'ttl' in item and int(time.time() * 1000) > item['ttl']:
+                # Record has expired, return 0
+                return 0
+            return int(item.get('invocations', 0))
+        return 0
+    except Exception as e:
+        logger.error(f"Error getting rate limit from {table_name}: {str(e)}")
+        return 0
+
+def update_rate_limit(associated_account: str, table_name: str) -> bool:
+    """
+    Update or create a rate limit record for an account.
+    Increments the invocation count by 1.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        table = dynamodb.Table(table_name)
+        
+        # First try to get existing record
+        response = table.query(
+            IndexName='associated_account-index',
+            KeyConditionExpression='associated_account = :acc',
+            ExpressionAttributeValues={':acc': associated_account}
+        )
+        
+        if response['Items']:
+            # Update existing record
+            item = response['Items'][0]
+            # Check if record has expired
+            if 'ttl' in item and int(time.time() * 1000) > item['ttl']:
+                # Record has expired, create new one
+                table.put_item(Item={
+                    'id': str(uuid.uuid4()),
+                    'associated_account': associated_account,
+                    'invocations': 1,
+                    'timestamp': int(time.time() * 1000),
+                    'ttl': int((time.time() + 60) * 1000)  # TTL 1 minute from now
+                })
+            else:
+                # Update existing record
+                table.update_item(
+                    Key={'id': item['id']},
+                    UpdateExpression='SET invocations = invocations + :inc',
+                    ExpressionAttributeValues={':inc': 1}
+                )
+        else:
+            # Create new record with TTL
+            table.put_item(Item={
+                'id': str(uuid.uuid4()),
+                'associated_account': associated_account,
+                'invocations': 1,
+                'timestamp': int(time.time() * 1000),
+                'ttl': int((time.time() + 60) * 1000)  # TTL 1 minute from now
+            })
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error updating rate limit in {table_name}: {str(e)}")
+        return False
+
+def get_user_rate_limits(account_id: str) -> Dict[str, int]:
+    """
+    Get the rate limits for a user from the Users table.
+    Returns a dictionary with 'rl_aws' and 'rl_ai' values.
+    """
+    try:
+        result = invoke_db_select(
+            table_name='Users',
+            index_name='id-index',
+            key_name='id',
+            key_value=account_id
+        )
+        
+        if isinstance(result, list) and result:
+            user = result[0]
+            return {
+                'rl_aws': int(user.get('rl_aws', 0)),
+                'rl_ai': int(user.get('rl_ai', 0))
+            }
+        return {'rl_aws': 0, 'rl_ai': 0}
+    except Exception as e:
+        logger.error(f"Error getting user rate limits: {str(e)}")
+        return {'rl_aws': 0, 'rl_ai': 0}

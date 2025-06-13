@@ -20,7 +20,10 @@ from db import (
     store_spam_conversation_item,
     store_ai_invocation,
     store_thread_item,
-    invoke_db_select
+    invoke_db_select,
+    get_rate_limit,
+    update_rate_limit,
+    get_user_rate_limits
 )
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from llm_interface import detect_spam
@@ -312,6 +315,19 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.info(f"Starting LLM response generation for conversation {conversation_id}")
         logger.info(f"Account ID: {account_id}, Is First Email: {is_first_email}")
 
+        # Check AI rate limit before LLM call
+        ai_invocations = get_rate_limit(account_id, 'RL_AI')
+        user_limits = get_user_rate_limits(account_id)
+        
+        if ai_invocations >= user_limits['rl_ai']:
+            logger.warning(f"AI rate limit exceeded for account {account_id}")
+            return None
+        
+        # Update AI rate limit before LLM call
+        if not update_rate_limit(account_id, 'RL_AI'):
+            logger.error(f"Failed to update AI rate limit for account {account_id}")
+            return None
+
         # Invoke LLM response Lambda
         payload = {
             'conversation_id': conversation_id,
@@ -430,6 +446,54 @@ def lambda_handler(event, context):
                 email_data = process_email_record(record)
                 if not email_data:
                     continue
+
+                # Check AWS rate limit
+                aws_invocations = get_rate_limit(email_data['account_id'], 'RL_AWS')
+                user_limits = get_user_rate_limits(email_data['account_id'])
+                
+                if aws_invocations >= user_limits['rl_aws']:
+                    logger.warning(f"AWS rate limit exceeded for account {email_data['account_id']}")
+                    return {
+                        'statusCode': 429,
+                        'body': json.dumps({
+                            'status': 'error',
+                            'message': 'AWS rate limit exceeded. Please try again later.'
+                        })
+                    }
+                
+                # Update AWS rate limit
+                if not update_rate_limit(email_data['account_id'], 'RL_AWS'):
+                    logger.error(f"Failed to update AWS rate limit for account {email_data['account_id']}")
+                    return {
+                        'statusCode': 500,
+                        'body': json.dumps({
+                            'status': 'error',
+                            'message': 'Internal server error while updating rate limit.'
+                        })
+                    }
+
+                # Check AI rate limit before LLM call
+                ai_invocations = get_rate_limit(email_data['account_id'], 'RL_AI')
+                if ai_invocations >= user_limits['rl_ai']:
+                    logger.warning(f"AI rate limit exceeded for account {email_data['account_id']}")
+                    return {
+                        'statusCode': 429,
+                        'body': json.dumps({
+                            'status': 'error',
+                            'message': 'AI rate limit exceeded. Please try again later.'
+                        })
+                    }
+                
+                # Update AI rate limit before LLM call
+                if not update_rate_limit(email_data['account_id'], 'RL_AI'):
+                    logger.error(f"Failed to update AI rate limit for account {email_data['account_id']}")
+                    return {
+                        'statusCode': 500,
+                        'body': json.dumps({
+                            'status': 'error',
+                            'message': 'Internal server error while updating rate limit.'
+                        })
+                    }
 
                 # Check if the email is spam using LLM
                 is_spam = detect_spam(
