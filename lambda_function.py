@@ -52,6 +52,7 @@ def update_thread_with_attributes(conversation_id: str) -> None:
         
         # Parse the response
         response_payload = json.loads(response['Payload'].read())
+        logger.info(f"Response payload: {response_payload}")
         if response_payload['statusCode'] != 200:
             logger.error(f"Failed to get thread attributes: {response_payload}")
             return
