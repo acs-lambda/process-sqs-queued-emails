@@ -37,6 +37,7 @@ lambda_client = boto3.client('lambda', region_name=AWS_REGION)
 def update_thread_with_attributes(conversation_id: str) -> None:
     """
     Invokes get-thread-attrs lambda and updates the thread with the returned attributes.
+    Now handles nested attributes structure and stores individual attributes.
     """
     try:
         # Invoke get-thread-attrs lambda
@@ -57,14 +58,22 @@ def update_thread_with_attributes(conversation_id: str) -> None:
             logger.error(f"Failed to get thread attributes: {response_payload}")
             return
             
-        attributes = json.loads(response_payload['body'])
+        # Parse the body which contains the actual attributes
+        body_data = json.loads(response_payload['body'])
         
-        # Convert attribute names to lowercase with underscores
-        formatted_attributes = {
-            key.lower().replace(' ', '_'): value 
-            for key, value in attributes.items()
-        }
+        # Extract attributes from the nested structure
+        attributes = body_data.get('attributes', {})
+        metadata = body_data.get('metadata', {})
         
+        # Combine attributes and metadata into a single update
+        formatted_attributes = {}
+        
+        # Process attributes
+        for key, value in attributes.items():
+            # Convert attribute names to lowercase with underscores
+            formatted_key = key.lower().replace(' ', '_')
+            formatted_attributes[formatted_key] = value
+                    
         # Update the thread using db-select
         if not update_thread_attributes(conversation_id, formatted_attributes):
             logger.error(f"Failed to update thread attributes for conversation {conversation_id}")
