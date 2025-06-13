@@ -9,7 +9,17 @@ from typing import Dict, Any, Optional
 
 from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN, SPAM_TTL_DAYS
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
-from db import get_conversation_id, get_associated_account, get_email_chain, get_account_email, update_thread_attributes, store_conversation_item, update_thread_read_status, store_thread_item, invoke_db_select, get_user_lcp_automatic_enabled, store_spam_conversation_item
+from db import (
+    get_conversation_id,
+    get_associated_account,
+    get_email_chain,
+    get_account_email,
+    get_user_lcp_automatic_enabled,
+    update_thread_attributes,
+    store_conversation_item,
+    store_spam_conversation_item,
+    store_ai_invocation
+)
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from llm_interface import detect_spam
 
