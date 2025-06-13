@@ -19,6 +19,7 @@ from db import (
     store_conversation_item,
     store_spam_conversation_item,
     store_ai_invocation,
+    store_thread_item,
     invoke_db_select
 )
 from scheduling import generate_safe_schedule_name, schedule_email_processing
@@ -162,7 +163,7 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             'user_info': user_info
         }
     except Exception as e:
-        logger.error(f"Error processing email record: {str(e)}")
+        logger.error(f"Error processing email record: {str(e)}", exc_info=True)
         return None
 
 def store_email_data(data: Dict[str, Any]) -> bool:
@@ -172,9 +173,10 @@ def store_email_data(data: Dict[str, Any]) -> bool:
     Returns True if successful, False otherwise.
     """
     try:
-        logger.info(f"Storing email data: {data}")
+        logger.info(f"Starting to store email data for conversation {data['conv_id']}")
         # Get sender name from user_info if available
         sender_name = data['user_info'].get('sender_name', '')
+        logger.info(f"Sender name from user_info: {sender_name}")
         
         # Prepare conversation data
         conversation_data = {
@@ -196,13 +198,17 @@ def store_email_data(data: Dict[str, Any]) -> bool:
         if data.get('llm_email_type'):
             conversation_data['llm_email_type'] = data['llm_email_type']
             conversation_data['type'] = 'llm-response'  # Override type for LLM responses
+            logger.info(f"Adding LLM email type: {data['llm_email_type']}")
         
         # Store in Conversations table using direct DynamoDB access
+        logger.info("Storing conversation data in Conversations table")
         if not store_conversation_item(conversation_data):
             logger.error(f"Failed to store conversation data for {data['conv_id']}")
             return False
+        logger.info("Successfully stored conversation data")
 
         # Check if thread exists using db-select
+        logger.info(f"Checking if thread exists for conversation {data['conv_id']}")
         existing_thread = invoke_db_select(
             table_name='Threads',
             index_name='conversation_id-index',  # Primary key query
@@ -234,6 +240,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             if not store_thread_item(thread_data):
                 logger.error(f"Failed to create thread for {data['conv_id']}")
                 return False
+            logger.info("Successfully created new thread")
                 
         elif existing_thread:
             # Update existing thread using direct DynamoDB access
@@ -241,15 +248,18 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             if not update_thread_read_status(data['conv_id'], False):
                 logger.error(f"Failed to update thread for {data['conv_id']}")
                 return False
+            logger.info("Successfully updated thread read status")
         else:
             logger.warning(f"Thread not found for non-first email conversation {data['conv_id']}")
 
         # Update thread attributes after storing email data
+        logger.info(f"Updating thread attributes for conversation {data['conv_id']}")
         update_thread_with_attributes(data['conv_id'])
 
+        logger.info(f"Successfully completed storing email data for conversation {data['conv_id']}")
         return True
     except Exception as e:
-        logger.error(f"Error storing email data: {str(e)}")
+        logger.error(f"Error storing email data: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         return False
 
 def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str) -> Optional[int]:
@@ -444,12 +454,11 @@ def lambda_handler(event, context):
                     else:
                         logger.error(f"Failed to store spam email for conversation {email_data['conv_id']}")
                     
-                    # Also create a thread entry for the spam conversation
-                    threads_table = dynamodb.Table('Threads')
-                    thread_item = {
+                    # Create thread entry for spam conversation using store_thread_item
+                    thread_data = {
                         'conversation_id': email_data['conv_id'],
                         'source': email_data['source'],
-                        'source_name': email_data['user_info'].get('sender_name', ''),  # Include sender name from user_info
+                        'source_name': email_data['user_info'].get('sender_name', ''),
                         'associated_account': email_data['account_id'],
                         'read': 'false',
                         'lcp_enabled': 'false',  # Disable LCP for spam
@@ -460,7 +469,11 @@ def lambda_handler(event, context):
                         'spam': 'true',  # Mark as spam in thread
                         'ttl': int(datetime.utcnow().timestamp()) + SPAM_TTL_DAYS * 24 * 60 * 60  # Same TTL as conversation
                     }
-                    threads_table.put_item(Item=thread_item)
+                    
+                    if not store_thread_item(thread_data):
+                        logger.error(f"Failed to create spam thread for conversation {email_data['conv_id']}")
+                    else:
+                        logger.info(f"Successfully created spam thread for conversation {email_data['conv_id']}")
                     
                     # Delete from SQS since we've processed it (even though it's spam)
                     sqs.delete_message(
@@ -544,6 +557,7 @@ def lambda_handler(event, context):
                         f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
                     )
                     schedule_time = datetime.utcnow() + timedelta(seconds=10)
+                    
                     # Add an attribute 'busy' to the thread with a value of true
                     update_thread_attributes(email_data['conv_id'], {'busy': True})
                     schedule_email_processing(
@@ -562,10 +576,10 @@ def lambda_handler(event, context):
                 )
 
             except Exception as e:
-                logger.error(f"Error processing record: {str(e)}")
+                logger.error(f"Error processing record: {str(e)}", exc_info=True)
                 continue
 
         return {'statusCode': 200, 'body': 'Success'}
     except Exception as e:
-        logger.error(f"Error in lambda handler: {str(e)}")
-        return {'statusCode': 500, 'body': str(e)}
+        logger.error(f"Error in lambda handler: {str(e)}", exc_info=True)
+        raise
