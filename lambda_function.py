@@ -18,7 +18,8 @@ from db import (
     update_thread_attributes,
     store_conversation_item,
     store_spam_conversation_item,
-    store_ai_invocation
+    store_ai_invocation,
+    invoke_db_select
 )
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from llm_interface import detect_spam

@@ -12,3 +12,8 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2')
 
 # Spam configuration
 SPAM_TTL_DAYS = int(os.environ.get('SPAM_TTL_DAYS', 30))  # Default 30 days TTL for spam emails
+
+# Together AI API configuration
+TOGETHER_API_KEY = os.environ['TAI_KEY']
+TOGETHER_API_URL = os.environ.get('TOGETHER_API_URL', 'https://api.together.xyz/v1/chat/completions')
+TOGETHER_MODEL = os.environ.get('TOGETHER_MODEL', 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free')
