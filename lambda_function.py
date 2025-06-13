@@ -23,7 +23,8 @@ from db import (
     invoke_db_select,
     get_rate_limit,
     update_rate_limit,
-    get_user_rate_limits
+    get_user_rate_limits,
+    update_thread_read_status
 )
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from llm_interface import detect_spam
@@ -37,10 +38,14 @@ sqs = boto3.client('sqs')
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 lambda_client = boto3.client('lambda', region_name=AWS_REGION)
 
-def update_thread_with_attributes(conversation_id: str) -> None:
+def update_thread_with_attributes(conversation_id: str, account_id: str) -> None:
     """
     Invokes get-thread-attrs lambda and updates the thread with the returned attributes.
     Now handles nested attributes structure and stores individual attributes.
+    
+    Args:
+        conversation_id (str): The ID of the conversation to update
+        account_id (str): The ID of the account associated with the conversation
     """
     try:
         # Invoke get-thread-attrs lambda
@@ -49,7 +54,8 @@ def update_thread_with_attributes(conversation_id: str) -> None:
             InvocationType='RequestResponse',
             Payload=json.dumps({
                 'body': json.dumps({
-                    'conversationId': conversation_id
+                    'conversationId': conversation_id,
+                    'accountId': account_id
                 })
             })
         )
@@ -226,7 +232,8 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             table_name='Threads',
             index_name='conversation_id-index',  # Primary key query
             key_name='conversation_id',
-            key_value=data['conv_id']
+            key_value=data['conv_id'],
+            account_id=data['account_id']
         )
         
         if data['is_first'] and not existing_thread:
@@ -267,7 +274,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
 
         # Update thread attributes after storing email data
         logger.info(f"Updating thread attributes for conversation {data['conv_id']}")
-        update_thread_with_attributes(data['conv_id'])
+        update_thread_with_attributes(data['conv_id'], data['account_id'])
 
         logger.info(f"Successfully completed storing email data for conversation {data['conv_id']}")
         return True
@@ -412,13 +419,20 @@ def get_user_lcp_automatic_enabled(account_id: str) -> bool:
     """
     Get the user's lcp_automatic_enabled status from the Users table.
     Returns True if enabled, False otherwise.
+    
+    Args:
+        account_id (str): The ID of the account to check
+        
+    Returns:
+        bool: True if LCP automatic is enabled, False otherwise
     """
     try:
         result = invoke_db_select(
             table_name='Users',
             index_name='id-index',
             key_name='id',
-            key_value=account_id
+            key_value=account_id,
+            account_id=account_id  # Added missing account_id parameter
         )
         
         # Handle list response
