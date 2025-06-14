@@ -352,32 +352,19 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.info(f"Received response from LLM response Lambda")
         response_payload = json.loads(response['Payload'].read())
         logger.info(f"Response payload: {json.dumps(response_payload, indent=2)}")
+        result = None
         
         if response_payload['statusCode'] != 200:
             logger.error(f"LLM response Lambda failed with status {response_payload['statusCode']}")
-            return None
-            
+
+                    
         result = json.loads(response_payload['body'])
         logger.info(f"Parsed response body: {json.dumps(result, indent=2)}")
         
         if result['status'] != 'success':
-            logger.error(f"LLM response generation failed: {result}")
+            logger.error(f"Exiting LLM response generation for conversation {conversation_id} due to status {result['status']}")
             return None
-
-        # Store invocation record for LLM response generation
-        usage = result.get('usage', {})
-        logger.info(f"Token usage from LLM response: {json.dumps(usage, indent=2)}")
         
-        invocation_success = store_ai_invocation(
-            associated_account=account_id,
-            input_tokens=usage.get('prompt_tokens', 0),
-            output_tokens=usage.get('completion_tokens', 0),
-            llm_email_type=result.get('llm_email_type', 'continuation_email'),
-            conversation_id=conversation_id,
-            model_name=result.get('model_name', 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8')
-        )
-        logger.info(f"Stored invocation record: {'Success' if invocation_success else 'Failed'}")
-
         # Store the LLM response in Conversations table
         llm_response = result['response']
         llm_email_type = result.get('llm_email_type', 'continuation_email')  # Default to continuation_email if not specified
