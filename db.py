@@ -355,7 +355,6 @@ def update_rate_limit(associated_account: str, table_name: str) -> bool:
             if 'ttl' in item and int(time.time() * 1000) > item['ttl']:
                 # Record has expired, create new one
                 table.put_item(Item={
-                    'id': str(uuid.uuid4()),
                     'associated_account': associated_account,
                     'invocations': 1,
                     'timestamp': int(time.time() * 1000),
@@ -364,14 +363,13 @@ def update_rate_limit(associated_account: str, table_name: str) -> bool:
             else:
                 # Update existing record
                 table.update_item(
-                    Key={'id': item['id']},
+                    Key={'associated_account': item['associated_account']},
                     UpdateExpression='SET invocations = invocations + :inc',
                     ExpressionAttributeValues={':inc': 1}
                 )
         else:
             # Create new record with TTL
             table.put_item(Item={
-                'id': str(uuid.uuid4()),
                 'associated_account': associated_account,
                 'invocations': 1,
                 'timestamp': int(time.time() * 1000),
