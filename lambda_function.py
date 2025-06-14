@@ -373,30 +373,8 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.info(f"LLM email type: {llm_email_type}")
         
         # Generate a unique message ID for the response
-        message_id = str(uuid.uuid4())
-        logger.info(f"Generated message ID: {message_id}")
         
-        # Store the response
-        conversation_data = {
-            'conversation_id': conversation_id,
-            'response_id': message_id,
-            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'sender': get_account_email(account_id),
-            'receiver': None,  # Will be set when sending the email
-            'associated_account': account_id,
-            'subject': None,  # Will be set when sending the email
-            'body': llm_response,
-            'type': 'llm-response',
-            'llm_email_type': llm_email_type
-        }
-        
-        logger.info("Storing conversation data in DynamoDB")
-        if not store_conversation_item(conversation_data):
-            logger.error(f"Failed to store LLM response for conversation {conversation_id}")
-            return None
-            
-        logger.info(f"Successfully stored LLM response with message ID {message_id}")
-        return message_id
+        return llm_response
     except Exception as e:
         logger.error(f"Error invoking LLM response Lambda: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         return None
