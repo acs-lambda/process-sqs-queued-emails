@@ -483,7 +483,7 @@ def lambda_handler(event, context):
                     email_data['conv_id'],
                     email_data['msg_id_hdr'],
                     email_data['account_id'],
-                    session_id=AUTH_BP
+                    AUTH_BP
                 )
                 
                 if ev is None:
