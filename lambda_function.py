@@ -7,7 +7,7 @@ import boto3
 import logging
 from typing import Dict, Any, Optional
 
-from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN, SPAM_TTL_DAYS, AUTH_BP
+from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN, SPAM_TTL_DAYS, AUTH_BP, logger
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
 from db import (
     get_conversation_id,
@@ -21,9 +21,9 @@ from db import (
 )
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from llm_interface import detect_spam
+from email_processor import process_email_record
 
 # Set up logging
-logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 s3 = boto3.client('s3')
@@ -396,182 +396,33 @@ def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
 def lambda_handler(event, context):
     """
     Main lambda handler for processing SQS queued emails.
+    Iterates through records and delegates processing to the email_processor module.
     """
     try:
         all_records = event.get('Records', [])
         if not all_records:
-            logger.warning("No records found in event")
+            logger.info("No records found in SQS event.")
             return {'statusCode': 200, 'body': 'No records to process'}
 
         for record in all_records:
             try:
-                # Process the email
-                email_data = process_email_record(record)
-                if not email_data:
-                    continue
-
-                # Check if the email is spam using LLM
-                is_spam = detect_spam(
-                    subject=email_data['subject'],
-                    body=email_data['text_body'],
-                    sender=email_data['source'],
-                    account_id=email_data['account_id'],
-                    session_id=AUTH_BP
-                )
-                
-                if is_spam:
-                    logger.info(f"Email from {email_data['source']} classified as spam. Storing with TTL and ending workflow.")
-                    
-                    # Prepare spam conversation data
-                    spam_conversation_data = {
-                        'conversation_id': email_data['conv_id'],
-                        'response_id': email_data['msg_id_hdr'],
-                        'in_reply_to': email_data['in_reply_to'],
-                        'timestamp': email_data['timestamp'],
-                        'sender': email_data['source'],
-                        'receiver': email_data['destination'],
-                        'associated_account': email_data['account_id'],
-                        'subject': email_data['subject'],
-                        'body': email_data['text_body'],
-                        's3_location': email_data['s3_key'],
-                        'type': 'inbound-email',
-                        'is_first_email': '1' if email_data['is_first'] else '0'
-                    }
-                    
-                    # Store spam conversation with TTL
-                    if store_spam_conversation_item(spam_conversation_data, SPAM_TTL_DAYS):
-                        logger.info(f"Successfully stored spam email with {SPAM_TTL_DAYS}-day TTL")
-                    else:
-                        logger.error(f"Failed to store spam email for conversation {email_data['conv_id']}")
-                    
-                    # Create thread entry for spam conversation using store_thread_item
-                    thread_data = {
-                        'conversation_id': email_data['conv_id'],
-                        'source': email_data['source'],
-                        'source_name': email_data['user_info'].get('sender_name', ''),
-                        'associated_account': email_data['account_id'],
-                        'read': 'false',
-                        'lcp_enabled': 'false',  # Disable LCP for spam
-                        'lcp_flag_threshold': '80',
-                        'flag': 'false',
-                        'flag_for_review': 'false',
-                        'flag_review_override': 'false',
-                        'spam': 'true',  # Mark as spam in thread
-                        'ttl': int(datetime.utcnow().timestamp()) + SPAM_TTL_DAYS * 24 * 60 * 60  # Same TTL as conversation
-                    }
-                    
-                    if not store_thread_item(thread_data):
-                        logger.error(f"Failed to create spam thread for conversation {email_data['conv_id']}")
-                    else:
-                        logger.info(f"Successfully created spam thread for conversation {email_data['conv_id']}")
-                    
-                    # Delete from SQS since we've processed it (even though it's spam)
-                    sqs.delete_message(
-                        QueueUrl=QUEUE_URL,
-                        ReceiptHandle=record['receiptHandle']
-                    )
-                    
-                    # Skip the rest of the workflow for spam emails
-                    continue
-
-                # Store the email data (non-spam emails only)
-                if not store_email_data(email_data):
-                    continue
-
-                # Calculate EV using the generate-ev lambda - this happens regardless of LCP settings
-                ev = invoke_generate_ev(
-                    email_data['conv_id'],
-                    email_data['msg_id_hdr'],
-                    email_data['account_id'],
-                    AUTH_BP
-                )
-                
-                if ev is None:
-                    logger.error(f"Failed to calculate EV for conversation {email_data['conv_id']}")
-                    continue
-
-                logger.info(f"EV score calculated: {ev} for conversation {email_data['conv_id']}")
-
-                # Get thread information to check thresholds
-                threads_table = dynamodb.Table('Threads')
-                thread_response = threads_table.get_item(
-                    Key={
-                        'conversation_id': email_data['conv_id']
-                    }
-                )
-                
-                # Get threshold from thread or use default
-                threshold = 80
-                if 'Item' in thread_response:
-                    # Convert Decimal to int if it exists
-                    threshold = int(thread_response['Item'].get('lcp_flag_threshold', 80))
-                
-                # Check if we should generate and send response
-                should_generate_response = True
-                if not email_data['is_first']:
-                    if 'Item' in thread_response:
-                        lcp_enabled = thread_response['Item'].get('lcp_enabled', 'false')
-                        should_generate_response = lcp_enabled == 'true'
-                        logger.info(f"Thread lcp_enabled value: {lcp_enabled}, will generate response: {should_generate_response}")
-
-                # Check user's lcp_automatic_enabled status
-                if should_generate_response:
-                    user_lcp_enabled = get_user_lcp_automatic_enabled(email_data['account_id'], AUTH_BP)
-                    should_generate_response = user_lcp_enabled
-                    logger.info(f"User lcp_automatic_enabled value: {user_lcp_enabled}, will generate response: {should_generate_response}")
-
-                if should_generate_response:
-                    # Generate response using the lcp-llm-response lambda
-                    response = invoke_llm_response(
-                        email_data['conv_id'],
-                        email_data['account_id'],
-                            email_data['is_first'],
-                        session_id=AUTH_BP
-                    )
-                    
-                    # If response is None, it means the conversation was flagged for review
-                    if response is None:
-                        logger.info(f"Skipping email scheduling for conversation {email_data['conv_id']} as it was flagged for review")
-                        continue
-
-                    # Prepare and schedule the response
-                    payload = {
-                        'response_body': response,
-                        'account': email_data['account_id'],
-                        'target': email_data['source'],
-                        'in_reply_to': email_data['msg_id_hdr'],
-                        'conversation_id': email_data['conv_id'],
-                        'subject': email_data['subject'],
-                        'ev_score': ev
-                    }
-
-                    schedule_name = generate_safe_schedule_name(
-                        f"process-email-{''.join(c for c in email_data['msg_id_hdr'] if c.isalnum())}"
-                    )
-                    schedule_time = datetime.utcnow() + timedelta(seconds=10)
-                    
-                    # Add an attribute 'busy' to the thread with a value of true
-                    update_thread_attributes(email_data['conv_id'], {'busy': True})
-                    schedule_email_processing(
-                        schedule_name,
-                        schedule_time,
-                        payload,
-                        email_data['in_reply_to']
-                    )
-                else:
-                    logger.info(f"Skipping response generation for conversation {email_data['conv_id']} as lcp_automatic_enabled is not 'true'")
-
-                # Only delete from SQS after successful processing
+                process_email_record(record)
+                # If process_email_record completes without raising an exception,
+                # we can safely delete the message from the queue.
                 sqs.delete_message(
                     QueueUrl=QUEUE_URL,
                     ReceiptHandle=record['receiptHandle']
                 )
-
             except Exception as e:
-                logger.error(f"Error processing record: {str(e)}", exc_info=True)
+                # Log the error but continue to the next record.
+                # This prevents a single poison pill message from halting the entire batch.
+                logger.error(f"Failed to process record {record.get('messageId', 'N/A')}: {e}", exc_info=True)
                 continue
 
-        return {'statusCode': 200, 'body': 'Success'}
+        return {'statusCode': 200, 'body': 'Successfully processed records.'}
+
     except Exception as e:
-        logger.error(f"Error in lambda handler: {str(e)}", exc_info=True)
+        logger.error(f"An unexpected error occurred in the lambda handler: {e}", exc_info=True)
+        # Re-raising the exception will cause SQS to retry the entire batch,
+        # which might be desirable for transient errors.
         raise
