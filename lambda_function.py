@@ -149,7 +149,7 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             conv_id = str(uuid.uuid4())
             logger.info(f"Generated new conversation ID: {conv_id}")
         
-        account_id = get_associated_account(destination, "", AUTH_BP)
+        account_id = get_associated_account(destination, "null", AUTH_BP)
         
         if not account_id:
             logger.error(f"No account found for destination: {destination}")
