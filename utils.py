@@ -105,7 +105,7 @@ def db_update(table_name, key_name, key_value, index_name, update_data, account_
         'index_name': index_name, 'update_data': update_data,
         'account_id': account_id, 'session_id': session_id
     }
-    response = invoke_lambda('db-update', {'body': json.dumps(payload)})
+    response = invoke_lambda('DBUpdate', {'body': json.dumps(payload)})
     return json.loads(response.get('body', '{}'))
 
 def db_delete(table_name, key_name, key_value, index_name, account_id, session_id):
