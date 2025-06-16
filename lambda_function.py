@@ -12,18 +12,11 @@ from parser import parse_email, extract_email_headers, extract_email_from_text, 
 from db import (
     get_conversation_id,
     get_associated_account,
-    get_email_chain,
-    get_account_email,
-    get_user_lcp_automatic_enabled,
     update_thread_attributes,
     store_conversation_item,
     store_spam_conversation_item,
-    store_ai_invocation,
     store_thread_item,
     invoke_db_select,
-    get_rate_limit,
-    update_rate_limit,
-    get_user_rate_limits,
     update_thread_read_status
 )
 from scheduling import generate_safe_schedule_name, schedule_email_processing
@@ -145,10 +138,10 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         # Use both In-Reply-To and References for better threading
         conv_id = None
         if in_reply_to:
-            conv_id = get_conversation_id(in_reply_to)
+            conv_id = get_conversation_id(in_reply_to, account_id, AUTH_BP)
             logger.info(f"Found conversation ID from in_reply_to: {conv_id}")
         if not conv_id and references:
-            conv_id = get_conversation_id(references)
+            conv_id = get_conversation_id(references, account_id, AUTH_BP)
             logger.info(f"Found conversation ID from references: {conv_id}")
         
         # Only generate new UUID if we couldn't find an existing conversation
@@ -156,7 +149,7 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             conv_id = str(uuid.uuid4())
             logger.info(f"Generated new conversation ID: {conv_id}")
         
-        account_id = get_associated_account(destination)
+        account_id = get_associated_account(destination, account_id, AUTH_BP)
         
         if not account_id:
             logger.error(f"No account found for destination: {destination}")
@@ -239,7 +232,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
         
         if data['is_first'] and not existing_thread:
             # Get user's lcp_automatic_enabled status
-            lcp_enabled = get_user_lcp_automatic_enabled(data['account_id'])
+            lcp_enabled = get_user_lcp_automatic_enabled(data['account_id'], AUTH_BP)
             logger.info(f"User lcp_automatic_enabled status: {lcp_enabled} for account {data['account_id']}")
             
             # Prepare thread data
@@ -324,19 +317,6 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.info(f"Starting LLM response generation for conversation {conversation_id}")
         logger.info(f"Account ID: {account_id}, Is First Email: {is_first_email}")
 
-        # Check AI rate limit before LLM call
-        ai_invocations = get_rate_limit(account_id, 'RL_AI')
-        user_limits = get_user_rate_limits(account_id)
-        
-        if ai_invocations >= user_limits['rl_ai']:
-            logger.warning(f"AI rate limit exceeded for account {account_id}")
-            return None
-        
-        # Update AI rate limit before LLM call
-        if not update_rate_limit(account_id, 'RL_AI'):
-            logger.error(f"Failed to update AI rate limit for account {account_id}")
-            return None
-
         # Invoke LLM response Lambda
         payload = {
             'conversation_id': conversation_id,
@@ -383,7 +363,7 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.error(f"Error invoking LLM response Lambda: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         return None
 
-def get_user_lcp_automatic_enabled(account_id: str) -> bool:
+def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
     """
     Get the user's lcp_automatic_enabled status from the Users table.
     Returns True if enabled, False otherwise.
@@ -429,54 +409,6 @@ def lambda_handler(event, context):
                 email_data = process_email_record(record)
                 if not email_data:
                     continue
-
-                # Check AWS rate limit
-                aws_invocations = get_rate_limit(email_data['account_id'], 'RL_AWS')
-                user_limits = get_user_rate_limits(email_data['account_id'])
-                
-                if aws_invocations >= user_limits['rl_aws']:
-                    logger.warning(f"AWS rate limit exceeded for account {email_data['account_id']}")
-                    return {
-                        'statusCode': 429,
-                        'body': json.dumps({
-                            'status': 'error',
-                            'message': 'AWS rate limit exceeded. Please try again later.'
-                        })
-                    }
-                
-                # Update AWS rate limit
-                if not update_rate_limit(email_data['account_id'], 'RL_AWS'):
-                    logger.error(f"Failed to update AWS rate limit for account {email_data['account_id']}")
-                    return {
-                        'statusCode': 500,
-                        'body': json.dumps({
-                            'status': 'error',
-                            'message': 'Internal server error while updating rate limit.'
-                        })
-                    }
-
-                # Check AI rate limit before LLM call
-                ai_invocations = get_rate_limit(email_data['account_id'], 'RL_AI')
-                if ai_invocations >= user_limits['rl_ai']:
-                    logger.warning(f"AI rate limit exceeded for account {email_data['account_id']}")
-                    return {
-                        'statusCode': 429,
-                        'body': json.dumps({
-                            'status': 'error',
-                            'message': 'AI rate limit exceeded. Please try again later.'
-                        })
-                    }
-                
-                # Update AI rate limit before LLM call
-                if not update_rate_limit(email_data['account_id'], 'RL_AI'):
-                    logger.error(f"Failed to update AI rate limit for account {email_data['account_id']}")
-                    return {
-                        'statusCode': 500,
-                        'body': json.dumps({
-                            'status': 'error',
-                            'message': 'Internal server error while updating rate limit.'
-                        })
-                    }
 
                 # Check if the email is spam using LLM
                 is_spam = detect_spam(
@@ -584,7 +516,7 @@ def lambda_handler(event, context):
 
                 # Check user's lcp_automatic_enabled status
                 if should_generate_response:
-                    user_lcp_enabled = get_user_lcp_automatic_enabled(email_data['account_id'])
+                    user_lcp_enabled = get_user_lcp_automatic_enabled(email_data['account_id'], AUTH_BP)
                     should_generate_response = user_lcp_enabled
                     logger.info(f"User lcp_automatic_enabled value: {user_lcp_enabled}, will generate response: {should_generate_response}")
 

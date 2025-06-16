@@ -15,7 +15,7 @@ logger.setLevel(logging.INFO)
 lambda_client = boto3.client('lambda', region_name=AWS_REGION)
 dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
 
-def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, key_value: Any) -> Optional[Dict[str, Any]]:
+def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, key_value: Any, account_id: str, session_id: str) -> Optional[Dict[str, Any]]:
     """
     Generic function to invoke the db-select Lambda for read operations only.
     Returns the parsed response or None if the invocation failed.
@@ -25,7 +25,9 @@ def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, 
             'table_name': table_name,
             'index_name': index_name,
             'key_name': key_name,
-            'key_value': key_value
+            'key_value': key_value,
+            'account_id': account_id,
+            'session_id': session_id
         }
         
         logger.info(f"Invoking database Lambda with payload: {json.dumps(payload)}")
@@ -70,7 +72,7 @@ def invoke_db_select(table_name: str, index_name: Optional[str], key_name: str, 
         logger.error(f"Error invoking database Lambda: {str(e)}", exc_info=True)
         return None
 
-def get_conversation_id(message_id: str) -> Optional[str]:
+def get_conversation_id(message_id: str, account_id: str, session_id: str) -> Optional[str]:
     """Get conversation ID by message ID."""
     if not message_id:
         return None
@@ -79,7 +81,9 @@ def get_conversation_id(message_id: str) -> Optional[str]:
         table_name='Conversations',
         index_name='response_id-index',
         key_name='response_id',
-        key_value=message_id
+        key_value=message_id,
+        account_id=account_id,
+        session_id=session_id
     )
     
     # Handle list response
@@ -87,13 +91,15 @@ def get_conversation_id(message_id: str) -> Optional[str]:
         return result[0].get('conversation_id')
     return None
 
-def get_associated_account(email: str) -> Optional[str]:
+def get_associated_account(email: str, account_id: str, session_id: str) -> Optional[str]:
     """Get account ID by email."""
     result = invoke_db_select(
         table_name='Users',
         index_name='responseEmail-index',
         key_name='responseEmail',
-        key_value=email.lower()
+        key_value=email.lower(),
+        account_id=account_id,
+        session_id=session_id
     )
     
     # Handle list response
@@ -101,13 +107,15 @@ def get_associated_account(email: str) -> Optional[str]:
         return result[0].get('id')
     return None
 
-def get_email_chain(conversation_id: str) -> List[Dict[str, Any]]:
+def get_email_chain(conversation_id: str, account_id: str, session_id: str) -> List[Dict[str, Any]]:
     """Get email chain for a conversation."""
     result = invoke_db_select(
         table_name='Conversations',
         index_name=None,  # Primary key query
         key_name='conversation_id',
-        key_value=conversation_id
+        key_value=conversation_id,
+        account_id=account_id,
+        session_id=session_id
     )
     
     # Handle list response directly
@@ -125,13 +133,15 @@ def get_email_chain(conversation_id: str) -> List[Dict[str, Any]]:
         'type': item.get('type', '')
     } for item in sorted_items]
 
-def get_account_email(account_id: str) -> Optional[str]:
+def get_account_email(account_id: str, session_id: str) -> Optional[str]:
     """Get account email by account ID."""
     result = invoke_db_select(
         table_name='Users',
         index_name=None,  # Primary key query
         key_name='id',
-        key_value=account_id
+        key_value=account_id,
+        account_id=account_id,
+        session_id=session_id
     )
     
     # Handle list response
@@ -139,13 +149,15 @@ def get_account_email(account_id: str) -> Optional[str]:
         return result[0].get('responseEmail')
     return None
 
-def get_user_lcp_automatic_enabled(account_id: str) -> bool:
+def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
     """Get lcp_automatic_enabled status for a user by account ID."""
     result = invoke_db_select(
         table_name='Users',
         index_name='id-index',  # Primary key query
         key_name='id',
-        key_value=account_id
+        key_value=account_id,
+        account_id=account_id,
+        session_id=session_id
     )
     
     # Handle list response
@@ -308,89 +320,3 @@ def store_ai_invocation(
         logger.error(f"Error storing AI invocation record: {str(e)}")
         return False
 
-def get_rate_limit(associated_account: str, table_name: str) -> int:
-    """
-    Get the current invocation count for an account from the rate limit table.
-    Returns 0 if no record exists.
-    """
-    try:
-        result = invoke('RateLimitAI', {
-            'client_id': account_id,
-            'session': session_id
-        })
-    except Exception as e:
-        logger.error(f"Error getting rate limit from {table_name}: {str(e)}")
-        return 0
-
-def update_rate_limit(associated_account: str, table_name: str) -> bool:
-    """
-    Update or create a rate limit record for an account.
-    Increments the invocation count by 1.
-    Returns True if successful, False otherwise.
-    """
-    try:
-        table = dynamodb.Table(table_name)
-        
-        # First try to get existing record
-        response = table.query(
-            IndexName='associated_account-index',
-            KeyConditionExpression='associated_account = :acc',
-            ExpressionAttributeValues={':acc': associated_account}
-        )
-        
-        if response['Items']:
-            # Update existing record
-            item = response['Items'][0]
-            # Check if record has expired
-            if 'ttl' in item and int(time.time() * 1000) > item['ttl']:
-                # Record has expired, create new one
-                table.put_item(Item={
-                    'associated_account': associated_account,
-                    'invocations': 1,
-                    'timestamp': int(time.time() * 1000),
-                    'ttl': int((time.time() + 60) * 1000)  # TTL 1 minute from now
-                })
-            else:
-                # Update existing record
-                table.update_item(
-                    Key={'associated_account': item['associated_account']},
-                    UpdateExpression='SET invocations = invocations + :inc',
-                    ExpressionAttributeValues={':inc': 1}
-                )
-        else:
-            # Create new record with TTL
-            table.put_item(Item={
-                'associated_account': associated_account,
-                'invocations': 1,
-                'timestamp': int(time.time() * 1000),
-                'ttl': int((time.time() + 60) * 1000)  # TTL 1 minute from now
-            })
-        
-        return True
-    except Exception as e:
-        logger.error(f"Error updating rate limit in {table_name}: {str(e)}")
-        return False
-
-def get_user_rate_limits(account_id: str) -> Dict[str, int]:
-    """
-    Get the rate limits for a user from the Users table.
-    Returns a dictionary with 'rl_aws' and 'rl_ai' values.
-    """
-    try:
-        result = invoke_db_select(
-            table_name='Users',
-            index_name='id-index',
-            key_name='id',
-            key_value=account_id
-        )
-        
-        if isinstance(result, list) and result:
-            user = result[0]
-            return {
-                'rl_aws': int(user.get('rl_aws', 0)),
-                'rl_ai': int(user.get('rl_ai', 0))
-            }
-        return {'rl_aws': 0, 'rl_ai': 0}
-    except Exception as e:
-        logger.error(f"Error getting user rate limits: {str(e)}")
-        return {'rl_aws': 0, 'rl_ai': 0}
