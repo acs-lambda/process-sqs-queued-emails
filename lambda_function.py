@@ -381,7 +381,7 @@ def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
             key_name='id',
             key_value=account_id,
             account_id=account_id,
-            session_id=AUTH_BP
+            session_id=session_id
         )
         
         # Handle list response
