@@ -395,34 +395,203 @@ def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
 
 def lambda_handler(event, context):
     """
-    Main lambda handler for processing SQS queued emails.
-    Iterates through records and delegates processing to the email_processor module.
+    AWS Lambda handler function that processes SQS messages containing emails.
+    
+    Args:
+        event (dict): The event data from AWS Lambda
+        context (LambdaContext): The runtime context from AWS Lambda
+        
+    Returns:
+        dict: Response containing status code and message
     """
     try:
-        all_records = event.get('Records', [])
-        if not all_records:
-            logger.info("No records found in SQS event.")
-            return {'statusCode': 200, 'body': 'No records to process'}
-
-        for record in all_records:
+        logger.info(f"Received event: {json.dumps(event)}")
+        
+        if 'Records' not in event:
+            logger.error("No Records found in event")
+            return {
+                'statusCode': 400,
+                'body': json.dumps({'error': 'No Records found in event'})
+            }
+            
+        for record in event['Records']:
             try:
-                process_email_record(record)
-                # If process_email_record completes without raising an exception,
-                # we can safely delete the message from the queue.
-                sqs.delete_message(
-                    QueueUrl=QUEUE_URL,
-                    ReceiptHandle=record['receiptHandle']
+                # Process the email record
+                email_data = process_email_record(record)
+                if not email_data:
+                    logger.error("Failed to process email record")
+                    continue
+                    
+                # Check if email is spam
+                is_spam = detect_spam(
+                    subject=email_data['subject'],
+                    body=email_data['text_body'],
+                    sender=email_data['source'],
+                    account_id=email_data['account_id'],
+                    session_id=AUTH_BP
                 )
+                
+                if is_spam:
+                    # Handle spam email
+                    spam_conversation_data = {
+                        **email_data,
+                        'type': 'inbound-email',
+                        'is_first_email': '1' if email_data['is_first'] else '0'
+                    }
+                    store_spam_conversation_item(spam_conversation_data, SPAM_TTL_DAYS)
+                    
+                    thread_data = {
+                        'conversation_id': email_data['conv_id'],
+                        'source': email_data['source'],
+                        'source_name': email_data['user_info'].get('sender_name', ''),
+                        'associated_account': email_data['account_id'],
+                        'read': 'false',
+                        'lcp_enabled': 'false',
+                        'lcp_flag_threshold': '80',
+                        'flag': 'false',
+                        'flag_for_review': 'false',
+                        'flag_review_override': 'false',
+                        'spam': 'true',
+                        'ttl': int(datetime.utcnow().timestamp()) + SPAM_TTL_DAYS * 24 * 60 * 60
+                    }
+                    store_thread_item(thread_data)
+                    continue
+                
+                # Handle non-spam email
+                # Store email data
+                conversation_data = {
+                    'conversation_id': email_data['conv_id'],
+                    'response_id': email_data['msg_id_hdr'],
+                    'in_reply_to': email_data['in_reply_to'],
+                    'timestamp': email_data['timestamp'],
+                    'sender': email_data['source'],
+                    'receiver': email_data['destination'],
+                    'associated_account': email_data['account_id'],
+                    'subject': email_data['subject'],
+                    'body': email_data['text_body'],
+                    's3_location': email_data['s3_key'],
+                    'type': 'inbound-email',
+                    'is_first_email': '1' if email_data['is_first'] else '0'
+                }
+                store_conversation_item(conversation_data)
+                
+                # Handle thread creation/update
+                existing_thread = invoke_db_select(
+                    'Threads',
+                    'conversation_id-index',
+                    'conversation_id',
+                    email_data['conv_id'],
+                    email_data['account_id'],
+                    AUTH_BP
+                )
+                
+                if email_data['is_first'] and not existing_thread:
+                    # Create new thread for first email
+                    user_settings = invoke_db_select(
+                        'Users',
+                        'id-index',
+                        'id',
+                        email_data['account_id'],
+                        email_data['account_id'],
+                        AUTH_BP
+                    )
+                    lcp_enabled = user_settings[0].get('lcp_automatic_enabled', 'false') if user_settings else 'false'
+                    
+                    thread_data = {
+                        'conversation_id': email_data['conv_id'],
+                        'source': email_data['source'],
+                        'source_name': email_data['user_info'].get('sender_name', ''),
+                        'associated_account': email_data['account_id'],
+                        'read': 'false',
+                        'lcp_enabled': lcp_enabled,
+                        'lcp_flag_threshold': '80',
+                        'flag': 'false',
+                        'flag_for_review': 'false',
+                        'flag_review_override': 'false'
+                    }
+                    store_thread_item(thread_data)
+                elif existing_thread:
+                    # Update existing thread
+                    update_thread_read_status(email_data['conv_id'], False)
+                
+                # Generate EV score
+                ev_score = invoke_generate_ev(
+                    email_data['conv_id'],
+                    email_data['msg_id_hdr'],
+                    email_data['account_id'],
+                    AUTH_BP
+                )
+                
+                if ev_score is None:
+                    logger.error(f"Failed to calculate EV for {email_data['conv_id']}")
+                    continue
+                
+                # Check if LCP is enabled and should respond
+                thread = invoke_db_select(
+                    'Threads',
+                    'conversation_id-index',
+                    'conversation_id',
+                    email_data['conv_id'],
+                    email_data['account_id'],
+                    AUTH_BP
+                )
+                
+                if not thread:
+                    logger.error(f"Could not find thread for conversation {email_data['conv_id']}")
+                    continue
+                
+                should_respond = (
+                    thread[0].get('lcp_enabled', 'false') == 'true' and
+                    get_user_lcp_automatic_enabled(email_data['account_id'], AUTH_BP)
+                )
+                
+                if should_respond:
+                    # Generate and schedule LLM response
+                    llm_response = invoke_llm_response(
+                        email_data['conv_id'],
+                        email_data['account_id'],
+                        email_data['is_first'],
+                        AUTH_BP
+                    )
+                    
+                    if llm_response:
+                        schedule_name = generate_safe_schedule_name(f"process-email-{email_data['msg_id_hdr']}")
+                        schedule_time = datetime.utcnow() + timedelta(seconds=10)
+                        
+                        # Update thread to indicate processing
+                        update_thread_attributes(email_data['conv_id'], {'busy': True})
+                        
+                        # Schedule the response
+                        schedule_email_processing(
+                            schedule_name,
+                            schedule_time,
+                            {
+                                'response_body': llm_response,
+                                'account': email_data['account_id'],
+                                'target': email_data['source'],
+                                'in_reply_to': email_data['msg_id_hdr'],
+                                'conversation_id': email_data['conv_id'],
+                                'subject': email_data['subject'],
+                                'ev_score': ev_score
+                            },
+                            email_data['in_reply_to']
+                        )
+                
+                # Update thread attributes
+                update_thread_with_attributes(email_data['conv_id'], email_data['account_id'])
+                
             except Exception as e:
-                # Log the error but continue to the next record.
-                # This prevents a single poison pill message from halting the entire batch.
-                logger.error(f"Failed to process record {record.get('messageId', 'N/A')}: {e}", exc_info=True)
+                logger.error(f"Error processing record: {str(e)}", exc_info=True)
                 continue
-
-        return {'statusCode': 200, 'body': 'Successfully processed records.'}
-
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps({'message': 'Successfully processed all records'})
+        }
+        
     except Exception as e:
-        logger.error(f"An unexpected error occurred in the lambda handler: {e}", exc_info=True)
-        # Re-raising the exception will cause SQS to retry the entire batch,
-        # which might be desirable for transient errors.
-        raise
+        logger.error(f"Error in lambda handler: {str(e)}", exc_info=True)
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'error': str(e)})
+        }
