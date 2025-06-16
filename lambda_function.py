@@ -572,7 +572,9 @@ def lambda_handler(event, context):
                                 'in_reply_to': email_data['msg_id_hdr'],
                                 'conversation_id': email_data['conv_id'],
                                 'subject': email_data['subject'],
-                                'ev_score': ev_score
+                                'ev_score': ev_score,
+                                'account_id': email_data['account_id'],
+                                'session_id': AUTH_BP
                             },
                             email_data['in_reply_to']
                         )
