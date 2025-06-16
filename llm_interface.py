@@ -37,7 +37,7 @@ CLASSIFY AS NOT SPAM if the email is:
 Respond with ONLY the word "spam" or "not spam" - nothing else."""
 }
 
-def detect_spam(subject: str, body: str, sender: str, account_id: str) -> bool:
+def detect_spam(subject: str, body: str, sender: str, account_id: str, session_id: str) -> bool:
     """
     Uses LLM to detect if an email is spam (not related to real estate conversations).
     Returns True if the email is spam, False otherwise.

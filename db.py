@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from config import AWS_REGION, DB_SELECT_LAMBDA
 from datetime import datetime, timedelta
 import uuid
+from utils import *
 import time
 
 logger = logging.getLogger()
@@ -313,21 +314,10 @@ def get_rate_limit(associated_account: str, table_name: str) -> int:
     Returns 0 if no record exists.
     """
     try:
-        table = dynamodb.Table(table_name)
-        response = table.query(
-            IndexName='associated_account-index',
-            KeyConditionExpression='associated_account = :acc',
-            ExpressionAttributeValues={':acc': associated_account}
-        )
-        
-        if response['Items']:
-            # Check if the record has expired (TTL)
-            item = response['Items'][0]
-            if 'ttl' in item and int(time.time() * 1000) > item['ttl']:
-                # Record has expired, return 0
-                return 0
-            return int(item.get('invocations', 0))
-        return 0
+        result = invoke('RateLimitAI', {
+            'client_id': account_id,
+            'session': session_id
+        })
     except Exception as e:
         logger.error(f"Error getting rate limit from {table_name}: {str(e)}")
         return 0

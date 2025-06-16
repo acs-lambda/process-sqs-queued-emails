@@ -12,6 +12,7 @@ AWS_REGION = os.environ.get('AWS_REGION', 'us-east-2')
 
 # Spam configuration
 SPAM_TTL_DAYS = int(os.environ.get('SPAM_TTL_DAYS', 30))  # Default 30 days TTL for spam emails
+AUTH_BP = os.environ.get('AUTH_BP', '')
 
 # Together AI API configuration
 TOGETHER_API_KEY = os.environ['TAI_KEY']

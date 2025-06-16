@@ -7,7 +7,7 @@ import boto3
 import logging
 from typing import Dict, Any, Optional
 
-from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN, SPAM_TTL_DAYS
+from config import BUCKET_NAME, QUEUE_URL, AWS_REGION, GENERATE_EV_LAMBDA_ARN, LCP_LLM_RESPONSE_LAMBDA_ARN, SPAM_TTL_DAYS, AUTH_BP
 from parser import parse_email, extract_email_headers, extract_email_from_text, extract_user_info_from_headers
 from db import (
     get_conversation_id,
@@ -233,6 +233,8 @@ def store_email_data(data: Dict[str, Any]) -> bool:
             index_name='conversation_id-index',  # Primary key query
             key_name='conversation_id',
             key_value=data['conv_id'],
+            account_id=data['account_id'],
+            session_id=AUTH_BP
         )
         
         if data['is_first'] and not existing_thread:
@@ -281,7 +283,7 @@ def store_email_data(data: Dict[str, Any]) -> bool:
         logger.error(f"Error storing email data: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         return False
 
-def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str) -> Optional[int]:
+def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str, session_id: str) -> Optional[int]:
     """
     Invokes the generate-ev lambda to calculate and update EV score.
     Returns the EV score if successful, None otherwise.
@@ -293,7 +295,8 @@ def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str) -
             Payload=json.dumps({
                 'conversation_id': conversation_id,
                 'message_id': message_id,
-                'account_id': account_id
+                'account_id': account_id,
+                'session_id': session_id
             })
         )
         
@@ -312,7 +315,7 @@ def invoke_generate_ev(conversation_id: str, message_id: str, account_id: str) -
         logger.error(f"Error invoking generate-ev lambda: {str(e)}")
         return None
 
-def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: bool) -> Optional[str]:
+def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: bool, session_id: str) -> Optional[str]:
     """
     Invokes the LLM response Lambda to generate a response.
     Returns the message ID if successful, None otherwise.
@@ -339,7 +342,8 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
             'conversation_id': conversation_id,
             'account_id': account_id,
             'is_first_email': is_first_email,
-            'scenario': None
+            'scenario': None,
+            'session_id': session_id
         }
         logger.info(f"Sending request to LLM response Lambda with payload: {json.dumps(payload, indent=2)}")
         
@@ -396,6 +400,8 @@ def get_user_lcp_automatic_enabled(account_id: str) -> bool:
             index_name='id-index',
             key_name='id',
             key_value=account_id,
+            account_id=account_id,
+            session_id=AUTH_BP
         )
         
         # Handle list response
@@ -477,7 +483,8 @@ def lambda_handler(event, context):
                     subject=email_data['subject'],
                     body=email_data['text_body'],
                     sender=email_data['source'],
-                    account_id=email_data['account_id']
+                    account_id=email_data['account_id'],
+                    session_id=AUTH_BP
                 )
                 
                 if is_spam:
@@ -543,7 +550,8 @@ def lambda_handler(event, context):
                 ev = invoke_generate_ev(
                     email_data['conv_id'],
                     email_data['msg_id_hdr'],
-                    email_data['account_id']
+                    email_data['account_id'],
+                    session_id=AUTH_BP
                 )
                 
                 if ev is None:
@@ -585,7 +593,8 @@ def lambda_handler(event, context):
                     response = invoke_llm_response(
                         email_data['conv_id'],
                         email_data['account_id'],
-                        email_data['is_first']
+                            email_data['is_first'],
+                        session_id=AUTH_BP
                     )
                     
                     # If response is None, it means the conversation was flagged for review
