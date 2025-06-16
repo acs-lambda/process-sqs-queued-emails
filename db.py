@@ -223,25 +223,7 @@ def store_spam_conversation_item(item: Dict[str, Any], ttl_days: int = 30) -> bo
         conversations_table = dynamodb.Table('Conversations')
         conversations_table.put_item(Item=spam_item)
         
-        # Also create a thread entry for the spam conversation
-        threads_table = dynamodb.Table('Threads')
-        thread_item = {
-            'conversation_id': item['conversation_id'],
-            'source': item['sender'],
-            'source_name': '',  # No sender name for spam
-            'associated_account': item['associated_account'],
-            'read': 'false',
-            'lcp_enabled': 'false',  # Disable LCP for spam
-            'lcp_flag_threshold': '80',
-            'flag': 'false',
-            'flag_for_review': 'false',
-            'flag_review_override': 'false',
-            'spam': 'true',  # Mark as spam in thread
-            'ttl': ttl_timestamp  # Same TTL as conversation
-        }
-        
-        threads_table.put_item(Item=thread_item)
-        
+        # Also create a thread entry for the spam conversation if first        
         logger.info(f"Stored spam conversation and thread with {ttl_days}-day TTL (expires at timestamp: {ttl_timestamp})")
         return True
     except Exception as e:
@@ -262,7 +244,7 @@ def store_thread_item(item: Dict[str, Any]) -> bool:
         logger.error(f"Error storing thread item: {str(e)}")
         return False
 
-def update_thread_read_status(conversation_id: str, read_status: bool) -> bool:
+def update_thread_read_status(conversation_id: str, read_status: str) -> bool:
     """Update thread read status using direct DynamoDB access."""
     try:
         threads_table = dynamodb.Table('Threads')

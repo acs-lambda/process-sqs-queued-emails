@@ -439,8 +439,7 @@ def lambda_handler(event, context):
                         'is_first_email': '1' if email_data['is_first'] else '0'
                     }
                     store_spam_conversation_item(spam_conversation_data, SPAM_TTL_DAYS)
-                    
-                    thread_data = {
+                    spam_thread_data = {
                         'conversation_id': email_data['conv_id'],
                         'source': email_data['source'],
                         'source_name': email_data['user_info'].get('sender_name', ''),
@@ -454,133 +453,123 @@ def lambda_handler(event, context):
                         'spam': 'true',
                         'ttl': int(datetime.utcnow().timestamp()) + SPAM_TTL_DAYS * 24 * 60 * 60
                     }
-                    store_thread_item(thread_data)
+                    store_thread_item(spam_thread_data)
+                    
                     continue
-                
-                # Handle non-spam email
-                # Store email data
-                conversation_data = {
-                    'conversation_id': email_data['conv_id'],
-                    'response_id': email_data['msg_id_hdr'],
-                    'in_reply_to': email_data['in_reply_to'],
-                    'timestamp': email_data['timestamp'],
-                    'sender': email_data['source'],
-                    'receiver': email_data['destination'],
-                    'associated_account': email_data['account_id'],
-                    'subject': email_data['subject'],
-                    'body': email_data['text_body'],
-                    's3_location': email_data['s3_key'],
-                    'type': 'inbound-email',
-                    'is_first_email': '1' if email_data['is_first'] else '0'
-                }
-                store_conversation_item(conversation_data)
-                
-                # Handle thread creation/update
-                existing_thread = invoke_db_select(
-                    'Threads',
-                    'conversation_id-index',
-                    'conversation_id',
-                    email_data['conv_id'],
-                    email_data['account_id'],
-                    AUTH_BP
-                )
-                
-                if email_data['is_first'] and not existing_thread:
-                    # Create new thread for first email
-                    user_settings = invoke_db_select(
-                        'Users',
-                        'id-index',
-                        'id',
-                        email_data['account_id'],
+                else:
+                    conversation_data = {
+                        'conversation_id': email_data['conv_id'],
+                        'response_id': email_data['msg_id_hdr'],
+                        'in_reply_to': email_data['in_reply_to'],
+                        'timestamp': email_data['timestamp'],
+                        'sender': email_data['source'],
+                        'receiver': email_data['destination'],
+                        'associated_account': email_data['account_id'],
+                        'subject': email_data['subject'],
+                        'body': email_data['text_body'],
+                        's3_location': email_data['s3_key'],
+                        'type': 'inbound-email',
+                        'is_first_email': '1' if email_data['is_first'] else '0'
+                    }
+                    store_conversation_item(conversation_data)
+                    
+            
+                    if email_data['is_first']:
+                        # Create new thread for first email
+                        user_settings = invoke_db_select(
+                            'Users',
+                            'id-index',
+                            'id',
+                            email_data['account_id'],
+                            email_data['account_id'],
+                            AUTH_BP
+                        )
+                        lcp_enabled = user_settings[0].get('lcp_automatic_enabled', 'false') if user_settings else 'false'
+                        
+                        thread_data = {
+                            'conversation_id': email_data['conv_id'],
+                            'source': email_data['source'],
+                            'source_name': email_data['user_info'].get('sender_name', ''),
+                            'associated_account': email_data['account_id'],
+                            'read': 'false',
+                            'lcp_enabled': lcp_enabled,
+                            'lcp_flag_threshold': '80',
+                            'flag': 'false',
+                            'spam': 'false',
+                            'flag_for_review': 'false',
+                            'flag_review_override': 'false'
+                        }
+                        store_thread_item(thread_data)
+                    else:
+                        # update read to false
+                        update_thread_read_status(email_data['conv_id'], 'false')
+                    # Generate EV score
+                    ev_score = invoke_generate_ev(
+                        email_data['conv_id'],
+                        email_data['msg_id_hdr'],
                         email_data['account_id'],
                         AUTH_BP
                     )
-                    lcp_enabled = user_settings[0].get('lcp_automatic_enabled', 'false') if user_settings else 'false'
                     
-                    thread_data = {
-                        'conversation_id': email_data['conv_id'],
-                        'source': email_data['source'],
-                        'source_name': email_data['user_info'].get('sender_name', ''),
-                        'associated_account': email_data['account_id'],
-                        'read': 'false',
-                        'lcp_enabled': lcp_enabled,
-                        'lcp_flag_threshold': '80',
-                        'flag': 'false',
-                        'flag_for_review': 'false',
-                        'flag_review_override': 'false'
-                    }
-                    store_thread_item(thread_data)
-                elif existing_thread:
-                    # Update existing thread
-                    update_thread_read_status(email_data['conv_id'], False)
-                
-                # Generate EV score
-                ev_score = invoke_generate_ev(
-                    email_data['conv_id'],
-                    email_data['msg_id_hdr'],
-                    email_data['account_id'],
-                    AUTH_BP
-                )
-                
-                if ev_score is None:
-                    logger.error(f"Failed to calculate EV for {email_data['conv_id']}")
-                    continue
-                
-                # Check if LCP is enabled and should respond
-                thread = invoke_db_select(
-                    'Threads',
-                    'conversation_id-index',
-                    'conversation_id',
-                    email_data['conv_id'],
-                    email_data['account_id'],
-                    AUTH_BP
-                )
-                
-                if not thread:
-                    logger.error(f"Could not find thread for conversation {email_data['conv_id']}")
-                    continue
-                
-                should_respond = (
-                    thread[0].get('lcp_enabled', 'false') == 'true' and
-                    get_user_lcp_automatic_enabled(email_data['account_id'], AUTH_BP)
-                )
-                
-                if should_respond:
-                    # Generate and schedule LLM response
-                    llm_response = invoke_llm_response(
+                    if ev_score is None:
+                        logger.error(f"Failed to calculate EV for {email_data['conv_id']}")
+                        continue
+                    
+                    # Check if LCP is enabled and should respond
+                    thread = invoke_db_select(
+                        'Threads',
+                        'conversation_id-index',
+                        'conversation_id',
                         email_data['conv_id'],
                         email_data['account_id'],
-                        email_data['is_first'],
                         AUTH_BP
                     )
                     
-                    if llm_response:
-                        schedule_name = generate_safe_schedule_name(f"process-email-{email_data['msg_id_hdr']}")
-                        schedule_time = datetime.utcnow() + timedelta(seconds=10)
-                        
-                        # Update thread to indicate processing
-                        update_thread_attributes(email_data['conv_id'], {'busy': True})
-                        
-                        # Schedule the response
-                        schedule_email_processing(
-                            schedule_name,
-                            schedule_time,
-                            {
-                                'response_body': llm_response,
-                                'account': email_data['account_id'],
-                                'target': email_data['source'],
-                                'in_reply_to': email_data['msg_id_hdr'],
-                                'conversation_id': email_data['conv_id'],
-                                'subject': email_data['subject'],
-                                'ev_score': ev_score,
-                                'account_id': email_data['account_id'],
-                                'session_id': AUTH_BP
-                            },
-                            email_data['in_reply_to']
+                    if not thread:
+                        logger.error(f"Could not find thread for conversation {email_data['conv_id']}")
+                        continue
+                    
+                    should_respond = (
+                        thread[0].get('lcp_enabled', 'false') == 'true' and
+                        get_user_lcp_automatic_enabled(email_data['account_id'], AUTH_BP)
+                    )
+                    
+                    if should_respond:
+                        # Generate and schedule LLM response
+                        llm_response = invoke_llm_response(
+                            email_data['conv_id'],
+                            email_data['account_id'],
+                            email_data['is_first'],
+                            AUTH_BP
                         )
-                
-                # Update thread attributes
-                update_thread_with_attributes(email_data['conv_id'], email_data['account_id'])
+                        
+                        if llm_response:
+                            schedule_name = generate_safe_schedule_name(f"process-email-{email_data['msg_id_hdr']}")
+                            schedule_time = datetime.utcnow() + timedelta(seconds=10)
+                            
+                            # Update thread to indicate processing
+                            update_thread_attributes(email_data['conv_id'], {'busy': True})
+                            
+                            # Schedule the response
+                            schedule_email_processing(
+                                schedule_name,
+                                schedule_time,
+                                {
+                                    'response_body': llm_response,
+                                    'account': email_data['account_id'],
+                                    'target': email_data['source'],
+                                    'in_reply_to': email_data['msg_id_hdr'],
+                                    'conversation_id': email_data['conv_id'],
+                                    'subject': email_data['subject'],
+                                    'ev_score': ev_score,
+                                    'account_id': email_data['account_id'],
+                                    'session_id': AUTH_BP
+                                },
+                                email_data['in_reply_to']
+                            )
+                    
+                    # Update thread attributes
+                    update_thread_with_attributes(email_data['conv_id'], email_data['account_id'])
                 
             except Exception as e:
                 logger.error(f"Error processing record: {str(e)}", exc_info=True)
