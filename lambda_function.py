@@ -396,7 +396,7 @@ def invoke_llm_response(conversation_id: str, account_id: str, is_first_email: b
         logger.error(f"Error invoking LLM response Lambda: {str(e)}", exc_info=True)  # Added exc_info for stack trace
         return None
 
-def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
+def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> str:
     """
     Get the user's lcp_automatic_enabled status from the Users table.
     Returns True if enabled, False otherwise.
@@ -420,7 +420,7 @@ def get_user_lcp_automatic_enabled(account_id: str, session_id: str) -> bool:
         # Handle list response
         logger.info(f"User lcp_automatic_enabled status: {result}")
         if isinstance(result, list) and result:
-            return result[0].get('lcp_automatic_enabled', 'false') == 'true'
+            return result[0].get('lcp_automatic_enabled', 'false')
         return False
     except Exception as e:
         logger.error(f"Error getting user lcp_automatic_enabled status: {str(e)}")
