@@ -124,40 +124,73 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         subject = mail['commonHeaders'].get('subject', '')
         s3_key = mail['messageId']
 
-        # Fetch and parse email
-        raw = s3.get_object(Bucket=BUCKET_NAME, Key=s3_key)['Body'].read()
-        msg, text_body = parse_email(raw)
-        
-        if not msg or not text_body:
-            logger.error("Failed to parse email content")
-            return None
-
-        msg_id_hdr, in_reply_to, references = extract_email_headers(msg)
-        user_info = extract_user_info_from_headers(msg)
-        
-        # Use both In-Reply-To and References for better threading
-        conv_id = None
-        if in_reply_to:
-            conv_id = get_conversation_id(in_reply_to, account_id, AUTH_BP)
-            logger.info(f"Found conversation ID from in_reply_to: {conv_id}")
-        if not conv_id and references:
-            conv_id = get_conversation_id(references, account_id, AUTH_BP)
-            logger.info(f"Found conversation ID from references: {conv_id}")
-        
-        # Only generate new UUID if we couldn't find an existing conversation
-        if not conv_id:
-            conv_id = str(uuid.uuid4())
-            logger.info(f"Generated new conversation ID: {conv_id}")
-        
+        # Get account_id first since we need it for conversation ID lookup
         account_id = get_associated_account(destination, "null", AUTH_BP)
         
         if not account_id:
             logger.error(f"No account found for destination: {destination}")
             return None
 
+        # Fetch and parse email
+        raw = s3.get_object(Bucket=BUCKET_NAME, Key=s3_key)['Body'].read()
+        msg, text_body = parse_email(raw)
+        
+        # Handle case where email parsing fails but we still want to process
+        if not msg:
+            logger.error("Failed to parse email message")
+            # Create minimal data structure for processing
+            msg_id_hdr = mail.get('messageId', '')
+            user_info = {'sender_name': '', 'sender_email': source}
+            text_body = f"Subject: {subject}\nFrom: {source}\n\n[Email content could not be parsed]"
+        else:
+            msg_id_hdr, in_reply_to, references = extract_email_headers(msg)
+            user_info = extract_user_info_from_headers(msg)
+            
+            # Use both In-Reply-To and References for better threading
+            conv_id = None
+            if in_reply_to:
+                conv_id = get_conversation_id(in_reply_to, account_id, AUTH_BP)
+                logger.info(f"Found conversation ID from in_reply_to: {conv_id}")
+            if not conv_id and references:
+                conv_id = get_conversation_id(references, account_id, AUTH_BP)
+                logger.info(f"Found conversation ID from references: {conv_id}")
+            
+            # Only generate new UUID if we couldn't find an existing conversation
+            if not conv_id:
+                conv_id = str(uuid.uuid4())
+                logger.info(f"Generated new conversation ID: {conv_id}")
+            
+            timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+            is_first = not bool(in_reply_to or references)
+            logger.info(f"Email is_first: {is_first}, conv_id: {conv_id}, in_reply_to: {in_reply_to}, references: {references}")
+
+            return {
+                'source': source,
+                'destination': destination,
+                'subject': subject,
+                's3_key': s3_key,
+                'msg_id_hdr': msg_id_hdr,
+                'in_reply_to': in_reply_to,
+                'references': references,
+                'conv_id': conv_id,
+                'account_id': account_id,
+                'timestamp': timestamp,
+                'is_first': is_first,
+                'text_body': text_body,
+                'user_info': user_info
+            }
+
+        # If we get here, we have minimal data but can still process
+        if not text_body:
+            logger.error("No text body available for email")
+            return None
+
+        # For failed parsing, create a basic conversation structure
+        conv_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-        is_first = not bool(in_reply_to or references)
-        logger.info(f"Email is_first: {is_first}, conv_id: {conv_id}, in_reply_to: {in_reply_to}, references: {references}")
+        is_first = True  # Assume first email if we can't determine threading
+        
+        logger.info(f"Processing email with minimal data - conv_id: {conv_id}, is_first: {is_first}")
 
         return {
             'source': source,
@@ -165,8 +198,8 @@ def process_email_record(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             'subject': subject,
             's3_key': s3_key,
             'msg_id_hdr': msg_id_hdr,
-            'in_reply_to': in_reply_to,
-            'references': references,
+            'in_reply_to': '',
+            'references': '',
             'conv_id': conv_id,
             'account_id': account_id,
             'timestamp': timestamp,
@@ -457,52 +490,11 @@ def lambda_handler(event, context):
                     
                     continue
                 else:
-                    conversation_data = {
-                        'conversation_id': email_data['conv_id'],
-                        'response_id': email_data['msg_id_hdr'],
-                        'in_reply_to': email_data['in_reply_to'],
-                        'timestamp': email_data['timestamp'],
-                        'sender': email_data['source'],
-                        'receiver': email_data['destination'],
-                        'associated_account': email_data['account_id'],
-                        'subject': email_data['subject'],
-                        'body': email_data['text_body'],
-                        's3_location': email_data['s3_key'],
-                        'type': 'inbound-email',
-                        'is_first_email': '1' if email_data['is_first'] else '0'
-                    }
-                    store_conversation_item(conversation_data)
+                    # Store email data using the robust store_email_data function
+                    if not store_email_data(email_data):
+                        logger.error(f"Failed to store email data for conversation {email_data['conv_id']}")
+                        continue
                     
-            
-                    if email_data['is_first']:
-                        # Create new thread for first email
-                        user_settings = invoke_db_select(
-                            'Users',
-                            'id-index',
-                            'id',
-                            email_data['account_id'],
-                            email_data['account_id'],
-                            AUTH_BP
-                        )
-                        lcp_enabled = user_settings[0].get('lcp_automatic_enabled', 'false') if user_settings else 'false'
-                        
-                        thread_data = {
-                            'conversation_id': email_data['conv_id'],
-                            'source': email_data['source'],
-                            'source_name': email_data['user_info'].get('sender_name', ''),
-                            'associated_account': email_data['account_id'],
-                            'read': 'false',
-                            'lcp_enabled': lcp_enabled,
-                            'lcp_flag_threshold': '80',
-                            'flag': 'false',
-                            'spam': 'false',
-                            'flag_for_review': 'false',
-                            'flag_review_override': 'false'
-                        }
-                        store_thread_item(thread_data)
-                    else:
-                        # update read to false
-                        update_thread_read_status(email_data['conv_id'], 'false')
                     # Generate EV score
                     ev_score = invoke_generate_ev(
                         email_data['conv_id'],

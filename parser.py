@@ -50,6 +50,7 @@ def strip_quoted_reply(text: str) -> str:
     filtered_lines = []
     in_quoted_section = False
     consecutive_empty_lines = 0
+    original_line_count = len(lines)
     
     for i, line in enumerate(lines):
         line = line.rstrip()  # Remove trailing whitespace
@@ -88,6 +89,11 @@ def strip_quoted_reply(text: str) -> str:
     cleaned_text = re.sub(r'\n{3,}', '\n\n', cleaned_text)  # Replace 3+ newlines with 2
     cleaned_text = cleaned_text.strip()
     
+    # If we removed too much content, restore the original
+    if len(cleaned_text) < 10 and original_line_count > 1:
+        logger.info(f"Stripping removed too much content (cleaned: {len(cleaned_text)} chars), restoring original")
+        return text.strip()
+    
     logger.info(f"Original text length: {len(text)}, Cleaned text length: {len(cleaned_text)}")
     return cleaned_text
 
@@ -101,38 +107,112 @@ def parse_email(email_content: bytes) -> Tuple[Optional[object], Optional[str]]:
         plain_text = None
         html_text = None
 
+        logger.info(f"Email content type: {msg.get_content_type()}")
+        logger.info(f"Email is multipart: {msg.is_multipart()}")
+
         if msg.is_multipart():
+            logger.info("Processing multipart email")
             for part in msg.iter_parts():
                 content_type = part.get_content_type()
+                logger.info(f"Processing part with content type: {content_type}")
                 try:
                     charset = part.get_content_charset() or 'utf-8'
                     if content_type == 'text/plain':
-                        plain_text = part.get_payload(decode=True).decode(charset, errors='replace')
+                        part_content = part.get_payload(decode=True)
+                        if part_content:
+                            plain_text = part_content.decode(charset, errors='replace')
+                            logger.info(f"Found plain text part, length: {len(plain_text)}")
                     elif content_type == 'text/html':
-                        html_text = part.get_payload(decode=True).decode(charset, errors='replace')
+                        part_content = part.get_payload(decode=True)
+                        if part_content:
+                            html_text = part_content.decode(charset, errors='replace')
+                            logger.info(f"Found HTML part, length: {len(html_text)}")
                 except Exception as e:
                     logger.error(f"Error decoding part {content_type}: {str(e)}")
                     continue
         else:
+            logger.info("Processing single part email")
             try:
                 charset = msg.get_content_charset() or 'utf-8'
-                if msg.get_content_type() == 'text/plain':
-                    plain_text = msg.get_payload(decode=True).decode(charset, errors='replace')
-                elif msg.get_content_type() == 'text/html':
-                    html_text = msg.get_payload(decode=True).decode(charset, errors='replace')
+                content_type = msg.get_content_type()
+                logger.info(f"Single part content type: {content_type}")
+                
+                if content_type == 'text/plain':
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        plain_text = payload.decode(charset, errors='replace')
+                        logger.info(f"Found plain text, length: {len(plain_text)}")
+                elif content_type == 'text/html':
+                    payload = msg.get_payload(decode=True)
+                    if payload:
+                        html_text = payload.decode(charset, errors='replace')
+                        logger.info(f"Found HTML, length: {len(html_text)}")
+                else:
+                    # Try to get payload anyway for other content types
+                    try:
+                        payload = msg.get_payload(decode=True)
+                        if payload:
+                            plain_text = payload.decode(charset, errors='replace')
+                            logger.info(f"Extracted text from {content_type}, length: {len(plain_text)}")
+                    except Exception as e:
+                        logger.error(f"Error extracting payload from {content_type}: {str(e)}")
             except Exception as e:
                 logger.error(f"Error decoding message: {str(e)}")
 
         # If no plain text but HTML exists, convert HTML to plain text
         if not plain_text and html_text:
+            logger.info("Converting HTML to plain text")
             # Simple HTML to text conversion
             plain_text = re.sub(r'<[^>]+>', ' ', html_text)
             plain_text = re.sub(r'\s+', ' ', plain_text).strip()
+            logger.info(f"Converted HTML to text, length: {len(plain_text)}")
+
+        # If we still don't have text, try to get the raw payload
+        if not plain_text:
+            logger.info("No text found, trying raw payload extraction")
+            try:
+                # Try to get the raw payload as a fallback
+                raw_payload = msg.get_payload()
+                if isinstance(raw_payload, str):
+                    plain_text = raw_payload
+                    logger.info(f"Extracted raw string payload, length: {len(plain_text)}")
+                elif isinstance(raw_payload, bytes):
+                    plain_text = raw_payload.decode('utf-8', errors='replace')
+                    logger.info(f"Extracted raw bytes payload, length: {len(plain_text)}")
+                elif isinstance(raw_payload, list):
+                    # Handle list of parts
+                    for part in raw_payload:
+                        if hasattr(part, 'get_payload'):
+                            try:
+                                part_content = part.get_payload(decode=True)
+                                if part_content:
+                                    plain_text = part_content.decode('utf-8', errors='replace')
+                                    logger.info(f"Extracted text from list part, length: {len(plain_text)}")
+                                    break
+                            except Exception as e:
+                                logger.error(f"Error extracting from list part: {str(e)}")
+                                continue
+            except Exception as e:
+                logger.error(f"Error extracting raw payload: {str(e)}")
+
+        # If we still don't have any text, create a minimal text from headers
+        if not plain_text:
+            logger.info("No text content found, creating minimal text from headers")
+            subject = msg.get('Subject', 'No Subject')
+            from_header = msg.get('From', 'Unknown Sender')
+            plain_text = f"Subject: {subject}\nFrom: {from_header}\n\n[Email content could not be extracted]"
 
         # Clean the text by removing quoted replies
         if plain_text:
+            original_length = len(plain_text)
             plain_text = strip_quoted_reply(plain_text)
             logger.info(f"Cleaned email body: {plain_text[:100]}...")  # Log first 100 chars
+            logger.info(f"Original text length: {original_length}, Cleaned text length: {len(plain_text)}")
+            
+            # If cleaning removed all content, restore the original
+            if len(plain_text) == 0 and original_length > 0:
+                logger.info("Cleaning removed all content, restoring original")
+                plain_text = f"Subject: {msg.get('Subject', 'No Subject')}\nFrom: {msg.get('From', 'Unknown Sender')}\n\n[Email content]"
 
         return msg, plain_text
     except Exception as e:
