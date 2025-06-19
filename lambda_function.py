@@ -22,6 +22,7 @@ from db import (
 from scheduling import generate_safe_schedule_name, schedule_email_processing
 from llm_interface import detect_spam
 from email_processor import process_email_record
+from utils import db_update
 
 # Set up logging
 logger.setLevel(logging.INFO)
@@ -490,6 +491,17 @@ def lambda_handler(event, context):
                     
                     continue
                 else:
+                    # Store attribute 'new_email' in Users table
+                    db_update(
+                        table_name='Users',
+                        key_name='id',
+                        key_value=email_data['account_id'],
+                        index_name='id-index',
+                        update_data={'new_email': True},
+                        account_id=email_data['account_id'],
+                        session_id=AUTH_BP
+                    )
+                    
                     # Store email data using the robust store_email_data function
                     if not store_email_data(email_data):
                         logger.error(f"Failed to store email data for conversation {email_data['conv_id']}")
